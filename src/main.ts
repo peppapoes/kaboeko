@@ -1,5 +1,6 @@
 import { AUTO, Game, Scale, type Types } from 'phaser';
 import { GAME_HEIGHT, GAME_WIDTH, RENDER_SCALE } from './config';
+import { GeschiedenisScene } from './scenes/GeschiedenisScene';
 import { StartScene } from './scenes/StartScene';
 
 const config: Types.Core.GameConfig = {
@@ -10,11 +11,11 @@ const config: Types.Core.GameConfig = {
     mode: Scale.FIT,
     autoCenter: Scale.CENTER_BOTH,
     // Canvas is rendered at RENDER_SCALE x the game size for sharpness;
-    // scenes still use 1920x1080 coordinates (see setupCamera in config.ts).
+    // scenes still use GAME_WIDTH x GAME_HEIGHT coordinates (see config.ts).
     width: GAME_WIDTH * RENDER_SCALE,
     height: GAME_HEIGHT * RENDER_SCALE,
   },
-  scene: [StartScene],
+  scene: [StartScene, GeschiedenisScene],
 };
 
 new Game(config);

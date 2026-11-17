@@ -26,14 +26,15 @@ npm install
 index.html          HTML-pagina waarin de game draait
 public/assets/      Afbeeldingen, geluid en andere bestanden (worden 1-op-1 gekopieerd)
 src/main.ts         Game-configuratie (schaalt mee met het scherm)
-src/config.ts       Gamegrootte (1920x1080) en instellingen voor scherpe weergave
+src/config.ts       Gamegrootte (1920x1280, verhouding 3:2) en instellingen voor scherpe weergave
 src/scenes/         Phaser-scenes
+docs/               Demovideo's en andere documentatie (komt niet mee online)
 ```
 
 ## Scherpe weergave (Retina)
 
-De game wordt intern op 2× resolutie getekend (3840x2160), zodat alles scherp
-blijft op Retina-schermen. In je scenes werk je gewoon met 1920x1080:
+De game wordt intern op 2× resolutie getekend (3840x2560), zodat alles scherp
+blijft op Retina-schermen. In je scenes werk je gewoon met 1920x1280:
 
 - Roep `setupCamera(this)` aan als eerste regel in de `create()` van elke scene.
 - Gebruik `GAME_WIDTH` / `GAME_HEIGHT` uit `config.ts` in plaats van `this.scale.width`.

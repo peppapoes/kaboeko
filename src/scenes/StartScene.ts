@@ -17,5 +17,19 @@ export class StartScene extends Scene {
         resolution: RENDER_SCALE,
       })
       .setOrigin(0.5);
+
+    // Temporary menu: one button per minigame.
+    this.add
+      .text(GAME_WIDTH / 2, GAME_HEIGHT / 2 + 100, 'Speel: geschiedenis', {
+        fontFamily: 'Arial',
+        fontSize: '28px',
+        color: '#FFFFFF',
+        backgroundColor: '#2D69B4',
+        padding: { x: 24, y: 12 },
+        resolution: RENDER_SCALE,
+      })
+      .setOrigin(0.5)
+      .setInteractive({ useHandCursor: true })
+      .on('pointerup', () => this.scene.start('GeschiedenisScene'));
   }
 }
