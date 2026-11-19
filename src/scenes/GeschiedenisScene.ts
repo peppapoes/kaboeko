@@ -1,11 +1,14 @@
 import { GameObjects, Input, Math as PMath, Scene, type Types } from 'phaser';
 import { GAME_HEIGHT, GAME_WIDTH, RENDER_SCALE, setupCamera } from '../config';
 import { dropIn, hop, popIn, riseIn, sinkOut, slideIn, slideOut, swing } from '../puppet';
+import { loadSvgParts } from '../svgParts';
 
 /*
  * Minigame "geschiedenis".
  *
  * Flow:
+ *  0. Title: "GESCHIEDENIS" with the letters falling in one by one. Goes on
+ *     with a button press, or by itself after a few seconds.
  *  1. Intro: explanation sign and cards. A button press starts the game.
  *  2. Player 1 digs with the trowel until something comes up. Only one thing
  *     is in the sand at a time; the joke finds come in between the real ones.
@@ -42,6 +45,13 @@ const DUST_PER_FIND = 4;
 const DUST_SIZE = 210;
 /** How far (px) the brush has to move over a dust spot to remove it. */
 const BRUSH_EFFORT = 700;
+
+// Title screen.
+const TITLE = { x: GAME_WIDTH / 2, y: 645, scale: 0.87 };
+/** Time between two letters falling in. */
+const TITLE_LETTER_DELAY = 70;
+/** The title goes on by itself after this many ms (a button press goes on sooner). */
+const TITLE_TIME = 4500;
 
 // Signs at the top of the screen (they hang from their post).
 const SIGN_X = [395, 766, 1140, 1512];
@@ -131,7 +141,7 @@ interface Sign {
   filled: boolean;
 }
 
-type State = 'intro' | 'introReady' | 'busy' | 'dig' | 'pickUp' | 'clean' | 'place' | 'done';
+type State = 'title' | 'titleReady' | 'intro' | 'introReady' | 'busy' | 'dig' | 'pickUp' | 'clean' | 'place' | 'done';
 
 /** Scale that makes an image fit inside maxWidth x maxHeight. */
 function fitScale(image: GameObjects.Image, maxWidth: number, maxHeight: number): number {
@@ -150,6 +160,7 @@ export class GeschiedenisScene extends Scene {
   /** The "pick up" and "place" cards show up by themselves only the first time. */
   private seenCard = { pickUp: false, place: false };
 
+  private titleObjects: GameObjects.Image[] = [];
   private introObjects: GameObjects.Image[] = [];
   private card?: GameObjects.Image;
   private overlay!: GameObjects.Rectangle;
@@ -175,6 +186,8 @@ export class GeschiedenisScene extends Scene {
     image('gs-dust1', 'dust1.png');
     image('gs-dust2', 'dust2.png');
     image('gs-dust3', 'dust3.png');
+    // Loaded as text: it is split into one image per letter (see svgParts.ts).
+    this.load.text('gs-title', PATH + 'geschiedenis.svg');
 
     // SVGs are turned into an image when loading (max 4096 px for GPU support).
     this.load.svg('gs-background', PATH + 'background.svg', { width: 3840, height: 2560 });
@@ -190,12 +203,13 @@ export class GeschiedenisScene extends Scene {
     setupCamera(this);
 
     // Reset state: the same scene object is reused when the scene restarts.
-    this.state = 'intro';
+    this.state = 'title';
     this.queue = this.makeQueue();
     this.buried = undefined;
     this.active = undefined;
     this.signs = [];
     this.seenCard = { pickUp: false, place: false };
+    this.titleObjects = [];
     this.introObjects = [];
     this.card = undefined;
     this.backButton = undefined;
@@ -220,7 +234,7 @@ export class GeschiedenisScene extends Scene {
       this.input.setDefaultCursor('default');
     });
 
-    this.showIntro();
+    this.showTitle();
   }
 
   // ---------------------------------------------------------------------------
@@ -253,9 +267,86 @@ export class GeschiedenisScene extends Scene {
     // Any button press puts away an info card that is still up.
     this.hideCard();
 
-    if (this.state === 'introReady') this.startGame();
+    if (this.state === 'titleReady') this.leaveTitle();
+    else if (this.state === 'introReady') this.startGame();
     else if (this.state === 'pickUp') this.pickUp();
     else if (this.state === 'place') this.placeOnSign();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Title
+  // ---------------------------------------------------------------------------
+
+  private async showTitle() {
+    this.input.setDefaultCursor('default');
+
+    const title = await loadSvgParts(this, this.cache.text.get('gs-title'), 'gs-title', RENDER_SCALE);
+    // The player may have left the scene while the letters were being prepared.
+    if (!this.sys.isActive() || this.state !== 'title') return;
+
+    // Letters fall in one by one, like puppets on a string.
+    const letters = title.parts.map((part, i) => {
+      const letter = this.add
+        .image(
+          TITLE.x + (part.x - title.width / 2) * TITLE.scale,
+          TITLE.y + (part.y - title.height / 2) * TITLE.scale,
+          part.key,
+        )
+        .setScale(TITLE.scale / RENDER_SCALE)
+        .setDepth(DEPTH.card);
+      dropIn(this, letter, { delay: 200 + i * TITLE_LETTER_DELAY, distance: 900 });
+      return letter;
+    });
+
+    // Then the tools come in and show what they do.
+    const toolsDelay = 400 + letters.length * TITLE_LETTER_DELAY;
+    const brush = this.add.image(581, 419, 'gs-brush').setScale(0.22).setDepth(DEPTH.card);
+    const trowel = this.add.image(1459, 830, 'gs-trowel').setScale(0.21).setDepth(DEPTH.card);
+    slideIn(this, brush, 'left', {
+      delay: toolsDelay,
+      sway: false,
+      onComplete: () =>
+        this.tweens.add({ targets: brush, x: brush.x + 40, angle: 8, duration: 350, yoyo: true, repeat: -1, ease: 'Sine.InOut' }),
+    });
+    slideIn(this, trowel, 'right', {
+      delay: toolsDelay + 150,
+      sway: false,
+      onComplete: () =>
+        this.tweens.add({
+          targets: trowel,
+          y: trowel.y - 20,
+          angle: -25,
+          duration: 450,
+          yoyo: true,
+          repeat: -1,
+          repeatDelay: 200,
+          ease: 'Sine.InOut',
+        }),
+    });
+
+    this.titleObjects = [...letters, brush, trowel];
+    this.time.delayedCall(toolsDelay + 600, () => {
+      if (this.state === 'title') this.state = 'titleReady';
+    });
+    this.time.delayedCall(TITLE_TIME, () => {
+      if (this.state === 'titleReady') this.leaveTitle();
+    });
+  }
+
+  private leaveTitle() {
+    this.state = 'busy';
+
+    const objects = this.titleObjects;
+    const brush = objects[objects.length - 2];
+    const trowel = objects[objects.length - 1];
+    objects.slice(0, -2).forEach((letter, i) => sinkOut(this, letter, { delay: i * 30 }));
+    slideOut(this, brush, 'left');
+    slideOut(this, trowel, 'right');
+
+    this.time.delayedCall(900, () => {
+      objects.forEach((o) => o.destroy());
+      this.showIntro();
+    });
   }
 
   // ---------------------------------------------------------------------------
@@ -263,6 +354,7 @@ export class GeschiedenisScene extends Scene {
   // ---------------------------------------------------------------------------
 
   private showIntro() {
+    this.state = 'intro';
     this.input.setDefaultCursor('default');
 
     const sign = this.add
