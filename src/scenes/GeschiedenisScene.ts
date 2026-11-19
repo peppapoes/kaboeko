@@ -448,7 +448,8 @@ export class GeschiedenisScene extends Scene {
       .setScale(95 / 335)
       .setDepth(DEPTH.backButton)
       .setInteractive()
-      .on('pointerup', () => this.scene.start('StartScene'));
+      // Back to the genre choice in the menu (without the title screen).
+      .on('pointerup', () => this.scene.start('MenuScene', { skipTitle: true }));
     popIn(this, this.backButton, { delay: 900 });
 
     this.addInfoButton('p2', 1000);

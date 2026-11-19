@@ -1,7 +1,7 @@
 import { AUTO, Game, Scale, type Types } from 'phaser';
 import { GAME_HEIGHT, GAME_WIDTH, RENDER_SCALE } from './config';
 import { GeschiedenisScene } from './scenes/GeschiedenisScene';
-import { StartScene } from './scenes/StartScene';
+import { MenuScene } from './scenes/MenuScene';
 
 const config: Types.Core.GameConfig = {
   type: AUTO,
@@ -15,7 +15,8 @@ const config: Types.Core.GameConfig = {
     width: GAME_WIDTH * RENDER_SCALE,
     height: GAME_HEIGHT * RENDER_SCALE,
   },
-  scene: [StartScene, GeschiedenisScene],
+  // The first scene in the list starts first.
+  scene: [MenuScene, GeschiedenisScene],
 };
 
 new Game(config);
