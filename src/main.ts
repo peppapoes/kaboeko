@@ -6,7 +6,8 @@ import { MenuScene } from './scenes/MenuScene';
 const config: Types.Core.GameConfig = {
   type: AUTO,
   parent: 'game-container',
-  backgroundColor: '#FFB6B5',
+  // Black, so switching between scenes (and loading) looks like a fade through black.
+  backgroundColor: '#000000',
   scale: {
     mode: Scale.FIT,
     autoCenter: Scale.CENTER_BOTH,

@@ -2,6 +2,7 @@ import { GameObjects, Input, Math as PMath, Scene, type Types } from 'phaser';
 import { GAME_HEIGHT, GAME_WIDTH, RENDER_SCALE, setupCamera } from '../config';
 import { dropIn, hop, popIn, riseIn, sinkOut, slideIn, slideOut, swing } from '../puppet';
 import { loadSvgParts } from '../svgParts';
+import { addPressButtonText } from '../ui';
 
 /*
  * Minigame "geschiedenis".
@@ -53,6 +54,12 @@ const TITLE_LETTER_DELAY = 70;
 /** The title goes on by itself after this many ms (a button press goes on sooner). */
 const TITLE_TIME = 4500;
 
+/** Where the brush and trowel are on the title screen and in the intro. */
+const TOOL_SPOTS = {
+  title: { brush: { x: 581, y: 419, scale: 0.22 }, trowel: { x: 1459, y: 830, scale: 0.21 } },
+  intro: { brush: { x: 714, y: 521, scale: 0.29 }, trowel: { x: 1233, y: 588, scale: 0.25 } },
+};
+
 // Signs at the top of the screen (they hang from their post).
 const SIGN_X = [395, 766, 1140, 1512];
 const SIGN_TOP_Y = -45;
@@ -77,6 +84,8 @@ const CARDS = {
 };
 /** Cards and the intro sign stand with the end of their stick well below the screen. */
 const CARD_BOTTOM_Y = GAME_HEIGHT + 110;
+/** "druk op een knop om het spel te starten" in the intro, just above the sign. */
+const PRESS_TEXT_Y = 850;
 /** Info cards shown via the info buttons disappear after this many ms. */
 const INFO_CARD_TIME = 4000;
 
@@ -162,6 +171,10 @@ export class GeschiedenisScene extends Scene {
 
   private titleObjects: GameObjects.Image[] = [];
   private introObjects: GameObjects.Image[] = [];
+  /** Brush and trowel shown on the title and intro screens. */
+  private introBrush?: GameObjects.Image;
+  private introTrowel?: GameObjects.Image;
+  private introPress?: GameObjects.Text;
   private card?: GameObjects.Image;
   private overlay!: GameObjects.Rectangle;
   private backButton?: GameObjects.Image;
@@ -201,6 +214,10 @@ export class GeschiedenisScene extends Scene {
 
   create() {
     setupCamera(this);
+    // Fade in from black (the menu fades out to black).
+    this.cameras.main.fadeIn(600, 0, 0, 0);
+    // Input is switched off while leaving the scene; switch it back on.
+    this.input.enabled = true;
 
     // Reset state: the same scene object is reused when the scene restarts.
     this.state = 'title';
@@ -211,6 +228,9 @@ export class GeschiedenisScene extends Scene {
     this.seenCard = { pickUp: false, place: false };
     this.titleObjects = [];
     this.introObjects = [];
+    this.introBrush = undefined;
+    this.introTrowel = undefined;
+    this.introPress = undefined;
     this.card = undefined;
     this.backButton = undefined;
 
@@ -233,6 +253,22 @@ export class GeschiedenisScene extends Scene {
       this.input.off('pointerup', this.pressButton, this);
       this.input.setDefaultCursor('default');
     });
+
+    // The back button is there from the start (title and intro too).
+    this.backButton = this.add
+      .image(110, 84, 'gs-back')
+      .setScale(95 / 335)
+      .setDepth(DEPTH.backButton)
+      .setInteractive({ useHandCursor: true })
+      .on('pointerup', (_p: Input.Pointer, _x: number, _y: number, event: Types.Input.EventData) => {
+        // Don't let this click also count as "the button".
+        event.stopPropagation();
+        // Fade to black, then back to the genre choice in the menu (without the title screen).
+        this.input.enabled = false;
+        this.cameras.main.fadeOut(400, 0, 0, 0);
+        this.cameras.main.once('camerafadeoutcomplete', () => this.scene.start('MenuScene', { skipTitle: true }));
+      });
+    popIn(this, this.backButton, { delay: 300 });
 
     this.showTitle();
   }
@@ -298,33 +334,17 @@ export class GeschiedenisScene extends Scene {
       return letter;
     });
 
-    // Then the tools come in and show what they do.
+    // Then the tools come in and show what they do. They stay for the intro.
     const toolsDelay = 400 + letters.length * TITLE_LETTER_DELAY;
-    const brush = this.add.image(581, 419, 'gs-brush').setScale(0.22).setDepth(DEPTH.card);
-    const trowel = this.add.image(1459, 830, 'gs-trowel').setScale(0.21).setDepth(DEPTH.card);
-    slideIn(this, brush, 'left', {
-      delay: toolsDelay,
-      sway: false,
-      onComplete: () =>
-        this.tweens.add({ targets: brush, x: brush.x + 40, angle: 8, duration: 350, yoyo: true, repeat: -1, ease: 'Sine.InOut' }),
-    });
-    slideIn(this, trowel, 'right', {
-      delay: toolsDelay + 150,
-      sway: false,
-      onComplete: () =>
-        this.tweens.add({
-          targets: trowel,
-          y: trowel.y - 20,
-          angle: -25,
-          duration: 450,
-          yoyo: true,
-          repeat: -1,
-          repeatDelay: 200,
-          ease: 'Sine.InOut',
-        }),
-    });
+    const { brush: b, trowel: t } = TOOL_SPOTS.title;
+    this.introBrush = this.add.image(b.x, b.y, 'gs-brush').setScale(b.scale).setDepth(DEPTH.card);
+    this.introTrowel = this.add.image(t.x, t.y, 'gs-trowel').setScale(t.scale).setDepth(DEPTH.card);
+    const brush = this.introBrush;
+    const trowel = this.introTrowel;
+    slideIn(this, brush, 'left', { delay: toolsDelay, sway: false, onComplete: () => this.brushing(brush) });
+    slideIn(this, trowel, 'right', { delay: toolsDelay + 150, sway: false, onComplete: () => this.scooping(trowel) });
 
-    this.titleObjects = [...letters, brush, trowel];
+    this.titleObjects = letters;
     this.time.delayedCall(toolsDelay + 600, () => {
       if (this.state === 'title') this.state = 'titleReady';
     });
@@ -336,16 +356,55 @@ export class GeschiedenisScene extends Scene {
   private leaveTitle() {
     this.state = 'busy';
 
-    const objects = this.titleObjects;
-    const brush = objects[objects.length - 2];
-    const trowel = objects[objects.length - 1];
-    objects.slice(0, -2).forEach((letter, i) => sinkOut(this, letter, { delay: i * 30 }));
-    slideOut(this, brush, 'left');
-    slideOut(this, trowel, 'right');
+    const letters = this.titleObjects;
+    letters.forEach((letter, i) => sinkOut(this, letter, { delay: i * 30 }));
+
+    // The tools don't leave: they move on to their place in the intro.
+    this.moveTool(this.introBrush, TOOL_SPOTS.intro.brush, (brush) => this.brushing(brush));
+    this.moveTool(this.introTrowel, TOOL_SPOTS.intro.trowel, (trowel) => this.scooping(trowel));
 
     this.time.delayedCall(900, () => {
-      objects.forEach((o) => o.destroy());
+      letters.forEach((o) => o.destroy());
       this.showIntro();
+    });
+  }
+
+  /** Glide a tool to a new spot, then start its movement again. */
+  private moveTool(
+    tool: GameObjects.Image | undefined,
+    spot: { x: number; y: number; scale: number },
+    then: (tool: GameObjects.Image) => void,
+  ) {
+    if (!tool) return;
+    this.tweens.killTweensOf(tool);
+    this.tweens.add({
+      targets: tool,
+      x: spot.x,
+      y: spot.y,
+      scale: spot.scale,
+      angle: 0,
+      duration: 900,
+      ease: 'Back.InOut',
+      onComplete: () => then(tool),
+    });
+  }
+
+  /** Brushing back and forth. */
+  private brushing(brush: GameObjects.Image) {
+    this.tweens.add({ targets: brush, x: brush.x + 50, angle: 8, duration: 350, yoyo: true, repeat: -1, ease: 'Sine.InOut' });
+  }
+
+  /** Scooping. */
+  private scooping(trowel: GameObjects.Image) {
+    this.tweens.add({
+      targets: trowel,
+      y: trowel.y - 25,
+      angle: -25,
+      duration: 450,
+      yoyo: true,
+      repeat: -1,
+      repeatDelay: 200,
+      ease: 'Sine.InOut',
     });
   }
 
@@ -365,35 +424,21 @@ export class GeschiedenisScene extends Scene {
     const cardP2 = this.addCard(CARDS.introP2);
     const cardP1 = this.addCard(CARDS.introP1);
 
-    const brush = this.add.image(714, 521, 'gs-brush').setScale(0.29).setDepth(DEPTH.card);
-    const trowel = this.add.image(1233, 588, 'gs-trowel').setScale(0.25).setDepth(DEPTH.card);
-
-    riseIn(this, sign, { delay: 100 });
+    // The sign comes up once and then stands still; the cards keep swaying.
+    riseIn(this, sign, { delay: 100, sway: false });
     riseIn(this, cardP2, { delay: 400 });
     riseIn(this, cardP1, { delay: 550 });
 
-    // The tools come in and show their movement: brushing back and forth, scooping.
-    slideIn(this, brush, 'left', {
-      delay: 800,
-      sway: false,
-      onComplete: () =>
-        this.tweens.add({ targets: brush, x: brush.x + 50, angle: 8, duration: 350, yoyo: true, repeat: -1, ease: 'Sine.InOut' }),
+    // "druk op een knop om het spel te starten" just above the sign.
+    addPressButtonText(this, GAME_WIDTH / 2, PRESS_TEXT_Y, { depth: DEPTH.card, delay: 900 }).then((press) => {
+      if (!press) return;
+      if (this.state === 'intro' || this.state === 'introReady') this.introPress = press;
+      else press.destroy();
     });
-    slideIn(this, trowel, 'right', {
-      delay: 950,
-      sway: false,
-      onComplete: () =>
-        this.tweens.add({
-          targets: trowel,
-          y: trowel.y - 25,
-          angle: -25,
-          duration: 450,
-          yoyo: true,
-          repeat: -1,
-          repeatDelay: 200,
-          ease: 'Sine.InOut',
-        }),
-    });
+
+    // The brush and trowel are already here: they came along from the title.
+    const brush = this.introBrush ?? this.add.image(0, 0, 'gs-brush');
+    const trowel = this.introTrowel ?? this.add.image(0, 0, 'gs-trowel');
 
     this.introObjects = [sign, cardP2, cardP1, brush, trowel];
     this.time.delayedCall(1400, () => (this.state = 'introReady'));
@@ -403,6 +448,12 @@ export class GeschiedenisScene extends Scene {
     this.state = 'busy';
 
     const [sign, cardP2, cardP1, brush, trowel] = this.introObjects;
+    const press = this.introPress;
+    this.introPress = undefined;
+    if (press) {
+      this.tweens.killTweensOf(press);
+      this.tweens.add({ targets: press, alpha: 0, duration: 250, onComplete: () => press.destroy() });
+    }
     sinkOut(this, cardP1);
     sinkOut(this, cardP2, { delay: 80 });
     sinkOut(this, sign, { delay: 160 });
@@ -443,14 +494,6 @@ export class GeschiedenisScene extends Scene {
       this.signs.push({ container, cover, boardX, boardY, boardW, boardH, filled: false });
     });
 
-    this.backButton = this.add
-      .image(110, 84, 'gs-back')
-      .setScale(95 / 335)
-      .setDepth(DEPTH.backButton)
-      .setInteractive()
-      // Back to the genre choice in the menu (without the title screen).
-      .on('pointerup', () => this.scene.start('MenuScene', { skipTitle: true }));
-    popIn(this, this.backButton, { delay: 900 });
 
     this.addInfoButton('p2', 1000);
     this.addInfoButton('p1', 1100);

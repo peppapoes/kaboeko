@@ -1,7 +1,8 @@
-import { GameObjects, Scene } from 'phaser';
+import { GameObjects, Scene, Time } from 'phaser';
 import { GAME_HEIGHT, GAME_WIDTH, RENDER_SCALE, setupCamera } from '../config';
-import { dropIn, riseIn, sway, swing } from '../puppet';
+import { dropIn, riseIn, sinkOut, stopSway, sway, swing } from '../puppet';
 import { loadSvgParts } from '../svgParts';
+import { addPressButtonText } from '../ui';
 
 /*
  * Main menu.
@@ -24,7 +25,11 @@ const PATH = 'assets/menu/';
 const TITLE = { x: GAME_WIDTH / 2, y: 320, scale: 0.87 };
 const TITLE_BOOK = { x: 1648, y: 800, scale: 0.87 };
 const TITLE_RIBBON = { x: 288, y: 450, scale: 0.87 };
-const PRESS_TEXT = { x: GAME_WIDTH / 2, y: 880, text: 'druk op een knop om het spel te starten' };
+/** "druk op een knop om het spel te starten" */
+const PRESS_TEXT = { x: GAME_WIDTH / 2, y: 880 };
+
+/** Back to the title screen after this many ms without anyone moving or clicking. */
+const IDLE_TIME = 30_000;
 
 /** Size of the genre books. */
 const GENRE_SCALE = 0.9;
@@ -60,6 +65,9 @@ type State = 'title' | 'titleReady' | 'busy' | 'genres';
 export class MenuScene extends Scene {
   private state: State = 'title';
   private titleObjects: GameObjects.GameObject[] = [];
+  private genreBooks: GameObjects.Image[] = [];
+  private genreSign?: GameObjects.Image;
+  private idleTimer?: Time.TimerEvent;
 
   constructor() {
     super('MenuScene');
@@ -82,14 +90,25 @@ export class MenuScene extends Scene {
 
   create(data: { skipTitle?: boolean }) {
     setupCamera(this);
+    this.cameras.main.fadeIn(600, 0, 0, 0);
     this.titleObjects = [];
+    this.genreBooks = [];
+    this.genreSign = undefined;
+    this.idleTimer = undefined;
     this.input.setDefaultCursor('default');
 
     this.add.image(0, 0, 'menu-background').setOrigin(0).setDisplaySize(GAME_WIDTH, GAME_HEIGHT).setDepth(DEPTH.background);
     this.addPaperEdges();
 
     this.input.on('pointerup', this.pressButton, this);
-    this.events.once('shutdown', () => this.input.off('pointerup', this.pressButton, this));
+    // Any mouse movement or click counts as "someone is playing".
+    this.input.on('pointermove', this.onActivity, this);
+    this.input.on('pointerdown', this.onActivity, this);
+    this.events.once('shutdown', () => {
+      this.input.off('pointerup', this.pressButton, this);
+      this.input.off('pointermove', this.onActivity, this);
+      this.input.off('pointerdown', this.onActivity, this);
+    });
 
     if (data?.skipTitle) this.showGenres();
     else this.showTitle();
@@ -151,20 +170,13 @@ export class MenuScene extends Scene {
       },
     });
 
-    const press = this.add
-      .text(PRESS_TEXT.x, PRESS_TEXT.y, PRESS_TEXT.text, {
-        fontFamily: '"Arial Narrow", Arial, sans-serif',
-        fontStyle: 'bold',
-        fontSize: '34px',
-        color: '#FFFFFF',
-        resolution: RENDER_SCALE,
-      })
-      .setOrigin(0.5)
-      .setDepth(DEPTH.content)
-      .setAlpha(0);
-    this.tweens.add({ targets: press, alpha: { from: 0.25, to: 1 }, delay: done + 600, duration: 800, yoyo: true, repeat: -1, ease: 'Sine.InOut' });
-
-    this.titleObjects.push(ribbon, book, press);
+    this.titleObjects.push(ribbon, book);
+    addPressButtonText(this, PRESS_TEXT.x, PRESS_TEXT.y, { depth: DEPTH.content, delay: done + 600 }).then((press) => {
+      // Only keep it if the title is still showing.
+      if (!press) return;
+      if (this.state === 'title' || this.state === 'titleReady') this.titleObjects.push(press);
+      else press.destroy();
+    });
     this.time.delayedCall(done + 400, () => {
       if (this.state === 'title') this.state = 'titleReady';
     });
@@ -176,6 +188,8 @@ export class MenuScene extends Scene {
     // Cross-fade: the title fades away while the genre books come in.
     const objects = this.titleObjects;
     this.titleObjects = [];
+    // Stop swaying and blinking, so they only fade.
+    this.tweens.killTweensOf(objects);
     this.tweens.add({
       targets: objects,
       alpha: 0,
@@ -209,6 +223,7 @@ export class MenuScene extends Scene {
         .setInteractive({ pixelPerfect: true, useHandCursor: true })
         .on('pointerover', () => this.state === 'genres' && swing(this, image, 2))
         .on('pointerup', () => this.chooseGenre(genre, image));
+      this.genreBooks.push(image);
     });
 
     const sign = this.add
@@ -218,8 +233,50 @@ export class MenuScene extends Scene {
       .setDepth(DEPTH.content);
     // Comes up once, then stands still.
     riseIn(this, sign, { delay: 400, distance: 500, sway: false });
+    this.genreSign = sign;
 
-    this.time.delayedCall(700, () => (this.state = 'genres'));
+    this.time.delayedCall(700, () => {
+      this.state = 'genres';
+      this.restartIdleTimer();
+    });
+  }
+
+  /** Back to the title when nobody has done anything for a while. */
+  private restartIdleTimer() {
+    this.idleTimer?.remove();
+    this.idleTimer = this.time.delayedCall(IDLE_TIME, () => {
+      if (this.state === 'genres') this.backToTitle();
+    });
+  }
+
+  private onActivity() {
+    if (this.state === 'genres') this.restartIdleTimer();
+  }
+
+  private backToTitle() {
+    this.state = 'busy';
+    this.idleTimer?.remove();
+
+    // The books are pulled up on their strings, the sign goes down.
+    const books = this.genreBooks;
+    this.genreBooks = [];
+    books.forEach((book, i) => {
+      stopSway(book);
+      this.tweens.killTweensOf(book);
+      this.tweens.add({
+        targets: book,
+        y: book.y - 1400,
+        delay: i * 80,
+        duration: 700,
+        ease: 'Back.In',
+        onComplete: () => book.destroy(),
+      });
+    });
+    const sign = this.genreSign;
+    this.genreSign = undefined;
+    if (sign) sinkOut(this, sign, { onComplete: () => sign.destroy() });
+
+    this.time.delayedCall(900, () => this.showTitle());
   }
 
   private chooseGenre(genre: Genre, image: GameObjects.Image) {
@@ -232,6 +289,7 @@ export class MenuScene extends Scene {
     }
 
     this.state = 'busy';
+    this.idleTimer?.remove();
     const scene = genre.scene;
     swing(this, image, 10);
     this.cameras.main.fadeOut(600, 0, 0, 0);
