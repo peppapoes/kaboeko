@@ -25,6 +25,17 @@ export interface MoveOptions {
 const randomSide = () => (Math.random() < 0.5 ? -1 : 1);
 
 /**
+ * Give a puppet a resting angle (in degrees): the angle it settles back to
+ * after wobbling, swaying or swinging. Default is 0 (straight).
+ */
+export function setRestAngle(target: Puppet, angle: number) {
+  target.setData('restAngle', angle);
+  target.setAngle(angle);
+}
+
+const restAngle = (target: Puppet): number => (target.getData('restAngle') as number | undefined) ?? 0;
+
+/**
  * Overshoot when arriving. Kept small so the end of a stick or post never
  * pops into view (keep at least ~10% of the travel distance hidden below/above the screen).
  */
@@ -34,7 +45,7 @@ const ARRIVE = { ease: 'Back.Out', easeParams: [1.2] };
 export function sway(scene: Scene, target: Puppet, amount = 1.2, duration = PMath.Between(2200, 3000)) {
   stopSway(target);
   const phase = Math.random() * Math.PI * 2;
-  const base = target.angle;
+  const base = restAngle(target);
   const tween = scene.tweens.addCounter({
     from: 0,
     to: Math.PI * 2,
@@ -55,9 +66,10 @@ export function stopSway(target: Puppet) {
 
 /** Wobble that dies out, then (optionally) keep swaying. */
 function wobbleIn(scene: Scene, target: Puppet, delay: number, duration: number, opts: MoveOptions) {
+  const base = restAngle(target);
   scene.tweens.add({
     targets: target,
-    angle: { from: randomSide() * 7, to: 0 },
+    angle: { from: base + randomSide() * 7, to: base },
     delay,
     duration: duration * 1.8,
     ease: 'Elastic.Out',
@@ -138,9 +150,10 @@ export function slideOut(scene: Scene, target: Puppet, to: 'left' | 'right', opt
 /** A push that makes the puppet swing and settle again (e.g. when something lands on it). */
 export function swing(scene: Scene, target: Puppet, strength = 6) {
   stopSway(target);
+  const base = restAngle(target);
   scene.tweens.add({
     targets: target,
-    angle: { from: randomSide() * strength, to: 0 },
+    angle: { from: base + randomSide() * strength, to: base },
     duration: 1600,
     ease: 'Elastic.Out',
     easeParams: [1, 0.35],

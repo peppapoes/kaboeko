@@ -1,6 +1,6 @@
 import { GameObjects, Input, Math as PMath, Scene, type Types } from 'phaser';
 import { GAME_HEIGHT, GAME_WIDTH, RENDER_SCALE, setupCamera } from '../config';
-import { dropIn, hop, popIn, riseIn, sinkOut, slideIn, slideOut, swing } from '../puppet';
+import { dropIn, hop, popIn, riseIn, setRestAngle, sinkOut, slideIn, slideOut, swing } from '../puppet';
 import { loadSvgParts } from '../svgParts';
 import { addPressButtonText } from '../ui';
 
@@ -57,7 +57,8 @@ const TITLE_TIME = 4500;
 /** Where the brush and trowel are on the title screen and in the intro. */
 const TOOL_SPOTS = {
   title: { brush: { x: 581, y: 419, scale: 0.22 }, trowel: { x: 1459, y: 830, scale: 0.21 } },
-  intro: { brush: { x: 714, y: 521, scale: 0.29 }, trowel: { x: 1233, y: 588, scale: 0.25 } },
+  // Each tool next to its player's card: trowel (player 1) left, brush (player 2) right.
+  intro: { brush: { x: 1206, y: 521, scale: 0.29 }, trowel: { x: 687, y: 588, scale: 0.25 } },
 };
 
 // Signs at the top of the screen (they hang from their post).
@@ -65,7 +66,8 @@ const SIGN_X = [395, 766, 1140, 1512];
 const SIGN_TOP_Y = -45;
 const SIGN_WIDTH = 318;
 /** The dark inner board of a sign image, in pixels of the source image. */
-const SIGN_BOARD = { x: 134, y: 412, width: 847, height: 529 };
+// (Only the inner part: the wooden bars of the frame must stay visible.)
+const SIGN_BOARD = { x: 142, y: 495, width: 830, height: 438 };
 const SIGN_BOARD_COLOR = 0x743e21;
 
 const SIGNS = [
@@ -77,11 +79,15 @@ const SIGNS = [
 
 /** Explanation cards on a stick: x = center, scale = size on screen. */
 const CARDS = {
-  introP1: { key: 'gs-card-p1-dig', file: 'speler1-stap1.svg', x: 1595, scale: 0.9 },
-  introP2: { key: 'gs-card-p2-brush', file: 'speler2-stap1.svg', x: 372, scale: 0.89 },
-  pickUp: { key: 'gs-card-p1-pickup', file: 'speler1-stap2.svg', x: 673, scale: 0.88 },
-  place: { key: 'gs-card-p2-place', file: 'speler2-stap2.svg', x: 1624, scale: 0.88 },
+  // Player 1 is on the left, player 2 on the right.
+  // lean = how much the drawing itself already leans, in degrees (+ = to the right).
+  introP1: { key: 'gs-card-p1-dig', file: 'speler1-stap1.svg', x: 395, scale: 0.9, lean: 5.5 },
+  introP2: { key: 'gs-card-p2-brush', file: 'speler2-stap1.svg', x: 1480, scale: 0.89, lean: -1.8 },
+  pickUp: { key: 'gs-card-p1-pickup', file: 'speler1-stap2.svg', x: 673, scale: 0.88, lean: -2.7 },
+  place: { key: 'gs-card-p2-place', file: 'speler2-stap2.svg', x: 1624, scale: 0.88, lean: 5.4 },
 };
+/** How far (degrees) the cards lean towards the outside of the screen. */
+const CARD_LEAN = 5;
 /** Cards and the intro sign stand with the end of their stick well below the screen. */
 const CARD_BOTTOM_Y = GAME_HEIGHT + 110;
 /** "druk op een knop om het spel te starten" in the intro, just above the sign. */
@@ -89,10 +95,10 @@ const PRESS_TEXT_Y = 850;
 /** Info cards shown via the info buttons disappear after this many ms. */
 const INFO_CARD_TIME = 4000;
 
-/** Info buttons in the bottom corners: red = player 2 (left), blue = player 1 (right). */
+/** Info buttons in the bottom corners: blue = player 1 (left), red = player 2 (right). */
 const INFO_BUTTONS = {
-  p2: { key: 'gs-info-red', file: 'info-red.svg', x: 75, cardX: CARDS.introP2.x },
-  p1: { key: 'gs-info-blue', file: 'info-blue.svg', x: GAME_WIDTH - 75, cardX: CARDS.introP1.x },
+  p1: { key: 'gs-info-blue', file: 'info-blue.svg', x: 75, cardX: CARDS.introP1.x },
+  p2: { key: 'gs-info-red', file: 'info-red.svg', x: GAME_WIDTH - 75, cardX: CARDS.introP2.x },
 };
 const INFO_BUTTON_Y = GAME_HEIGHT - 75;
 const INFO_BUTTON_SIZE = 95;
@@ -175,6 +181,7 @@ export class GeschiedenisScene extends Scene {
   private introBrush?: GameObjects.Image;
   private introTrowel?: GameObjects.Image;
   private introPress?: GameObjects.Text;
+  private infoButtons: GameObjects.Image[] = [];
   private card?: GameObjects.Image;
   private overlay!: GameObjects.Rectangle;
   private backButton?: GameObjects.Image;
@@ -231,6 +238,7 @@ export class GeschiedenisScene extends Scene {
     this.introBrush = undefined;
     this.introTrowel = undefined;
     this.introPress = undefined;
+    this.infoButtons = [];
     this.card = undefined;
     this.backButton = undefined;
 
@@ -509,11 +517,17 @@ export class GeschiedenisScene extends Scene {
 
   /** A card on a stick that rises from below and sways. */
   private addCard(card: (typeof CARDS)[keyof typeof CARDS], x = card.x): GameObjects.Image {
-    return this.add
+    const image = this.add
       .image(x, CARD_BOTTOM_Y, card.key)
       .setOrigin(0.5, 1)
       .setScale(card.scale / RENDER_SCALE)
       .setDepth(DEPTH.card);
+
+    // Cards lean towards the outside of the screen: left cards to the left, right cards to the right.
+    // `card.lean` is how much the drawing itself already leans (+ = to the right).
+    const side = x < GAME_WIDTH / 2 ? -1 : 1;
+    setRestAngle(image, side * CARD_LEAN - card.lean);
+    return image;
   }
 
   private showCard(card: (typeof CARDS)[keyof typeof CARDS], x = card.x) {
@@ -536,6 +550,7 @@ export class GeschiedenisScene extends Scene {
         this.showInfo(player);
       });
     popIn(this, button, { delay });
+    this.infoButtons.push(button);
   }
 
   private showInfo(player: keyof typeof INFO_BUTTONS) {
@@ -842,6 +857,16 @@ export class GeschiedenisScene extends Scene {
     this.state = 'done';
     this.setTool('none');
     this.active = undefined;
+
+    // No more explanation needed: the info buttons (and any open card) go away.
+    this.hideCard();
+    const buttons = this.infoButtons;
+    this.infoButtons = [];
+    buttons.forEach((button) => {
+      button.disableInteractive();
+      this.tweens.killTweensOf(button);
+      this.tweens.add({ targets: button, scale: 0, duration: 300, ease: 'Back.In', onComplete: () => button.destroy() });
+    });
 
     this.tweens.add({ targets: book.container, alpha: 0, scale: 1.2, duration: 400 });
     this.tweens.add({ targets: this.overlay, alpha: 0.8, duration: 400 });
