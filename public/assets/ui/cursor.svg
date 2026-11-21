@@ -1,0 +1,5 @@
+<svg width="44" height="44" viewBox="0 0 44 44" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- Tilt-controller cursor. The tip (top left, at 2,2) is the click point. Replace freely. -->
+  <path d="M5 6 L5 36 L13 28.5 L19 41 L25 38 L19 26 L30 26 Z" fill="#03314E" opacity="0.25" transform="translate(2 2)"/>
+  <path d="M3 3 L3 33 L11 25.5 L17 38 L23 35 L17 23 L28 23 Z" fill="#FFFFFF" stroke="#03314E" stroke-width="3" stroke-linejoin="round"/>
+</svg>

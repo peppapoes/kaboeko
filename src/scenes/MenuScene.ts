@@ -1,6 +1,7 @@
 import { GameObjects, Scene, Time } from 'phaser';
 import { GAME_HEIGHT, GAME_WIDTH, RENDER_SCALE, setupCamera } from '../config';
 import { dropIn, riseIn, sinkOut, stopSway, sway, swing } from '../puppet';
+import { inputManager } from '../input/InputManager';
 import { loadSvgParts } from '../svgParts';
 import { addPressButtonText } from '../ui';
 
@@ -104,10 +105,15 @@ export class MenuScene extends Scene {
     // Any mouse movement or click counts as "someone is playing".
     this.input.on('pointermove', this.onActivity, this);
     this.input.on('pointerdown', this.onActivity, this);
+    // Player 1's controller (moving or pressing) counts too.
+    inputManager.on('cursormove', this.onActivity, this);
+    inputManager.on('select', this.onActivity, this);
     this.events.once('shutdown', () => {
       this.input.off('pointerup', this.pressButton, this);
       this.input.off('pointermove', this.onActivity, this);
       this.input.off('pointerdown', this.onActivity, this);
+      inputManager.off('cursormove', this.onActivity, this);
+      inputManager.off('select', this.onActivity, this);
     });
 
     if (data?.skipTitle) this.showGenres();
@@ -238,6 +244,8 @@ export class MenuScene extends Scene {
     this.time.delayedCall(700, () => {
       this.state = 'genres';
       this.restartIdleTimer();
+      // Both players choose: player 1 with the controller (+ Space), player 2 with the mouse.
+      inputManager.setSplit(this);
     });
   }
 
@@ -256,6 +264,7 @@ export class MenuScene extends Scene {
   private backToTitle() {
     this.state = 'busy';
     this.idleTimer?.remove();
+    inputManager.setSplit(null);
 
     // The books are pulled up on their strings, the sign goes down.
     const books = this.genreBooks;
@@ -290,6 +299,7 @@ export class MenuScene extends Scene {
 
     this.state = 'busy';
     this.idleTimer?.remove();
+    inputManager.setSplit(null);
     const scene = genre.scene;
     swing(this, image, 10);
     this.cameras.main.fadeOut(600, 0, 0, 0);

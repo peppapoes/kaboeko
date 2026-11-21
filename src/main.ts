@@ -1,5 +1,6 @@
 import { AUTO, Game, Scale, type Types } from 'phaser';
 import { GAME_HEIGHT, GAME_WIDTH, RENDER_SCALE } from './config';
+import { inputManager } from './input/InputManager';
 import { GeschiedenisScene } from './scenes/GeschiedenisScene';
 import { MenuScene } from './scenes/MenuScene';
 
@@ -20,4 +21,7 @@ const config: Types.Core.GameConfig = {
   scene: [MenuScene, GeschiedenisScene],
 };
 
-new Game(config);
+const game = new Game(config);
+
+// Mouse/trackpad or tilt controller (ESP32), for all scenes. See src/input/InputManager.ts.
+inputManager.attach(game);
