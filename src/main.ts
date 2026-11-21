@@ -2,6 +2,7 @@ import { AUTO, Game, Scale, type Types } from 'phaser';
 import { GAME_HEIGHT, GAME_WIDTH, RENDER_SCALE } from './config';
 import { inputManager } from './input/InputManager';
 import { DetectiveScene } from './scenes/DetectiveScene';
+import { KomedieScene } from './scenes/KomedieScene';
 import { GeschiedenisScene } from './scenes/GeschiedenisScene';
 import { MenuScene } from './scenes/MenuScene';
 
@@ -19,7 +20,7 @@ const config: Types.Core.GameConfig = {
     height: GAME_HEIGHT * RENDER_SCALE,
   },
   // The first scene in the list starts first.
-  scene: [MenuScene, GeschiedenisScene, DetectiveScene],
+  scene: [MenuScene, GeschiedenisScene, DetectiveScene, KomedieScene],
 };
 
 const game = new Game(config);

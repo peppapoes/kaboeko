@@ -19,6 +19,11 @@ export interface MoveOptions {
   distance?: number;
   /** Keep swaying after arriving (default true). */
   sway?: boolean;
+  /**
+   * Overshoot a little when arriving (default true). Turn off for things whose
+   * stick/post ends just at the edge of the screen, so the end never shows.
+   */
+  overshoot?: boolean;
   onComplete?: () => void;
 }
 
@@ -87,7 +92,8 @@ export function riseIn(scene: Scene, target: Puppet, opts: MoveOptions = {}) {
   const { delay = 0, duration = 900, distance = 700 } = opts;
   const y = target.y;
   target.y = y + distance;
-  scene.tweens.add({ targets: target, y, delay, duration, ...ARRIVE });
+  const ease = opts.overshoot === false ? { ease: 'Cubic.Out' } : ARRIVE;
+  scene.tweens.add({ targets: target, y, delay, duration, ...ease });
   wobbleIn(scene, target, delay, duration, opts);
 }
 
