@@ -1,6 +1,7 @@
 import { GameObjects, Input, Math as PMath, Scene, type Types } from 'phaser';
 import { GAME_HEIGHT, GAME_WIDTH, RENDER_SCALE, setupCamera } from '../config';
 import { dropIn, hop, popIn, riseIn, setRestAngle, sinkOut, slideIn, slideOut, swing } from '../puppet';
+import { PlayerPointers } from '../playerPointers';
 import { loadSvgParts } from '../svgParts';
 import { addPressButtonText } from '../ui';
 
@@ -54,11 +55,14 @@ const TITLE_LETTER_DELAY = 70;
 /** The title goes on by itself after this many ms (a button press goes on sooner). */
 const TITLE_TIME = 4500;
 
-/** Where the brush and trowel are on the title screen and in the intro. */
+/**
+ * Where the brush and trowel are on the title screen and in the intro.
+ * width = how wide they are on screen (game pixels), whatever the size of the image file.
+ */
 const TOOL_SPOTS = {
-  title: { brush: { x: 581, y: 419, scale: 0.22 }, trowel: { x: 1459, y: 830, scale: 0.21 } },
+  title: { brush: { x: 581, y: 419, width: 194 }, trowel: { x: 1459, y: 830, width: 204 } },
   // Each tool next to its player's card: trowel (player 1) left, brush (player 2) right.
-  intro: { brush: { x: 1206, y: 521, scale: 0.29 }, trowel: { x: 687, y: 588, scale: 0.25 } },
+  intro: { brush: { x: 1206, y: 521, width: 256 }, trowel: { x: 687, y: 588, width: 243 } },
 };
 
 // Signs at the top of the screen (they hang from their post).
@@ -94,6 +98,8 @@ const CARD_BOTTOM_Y = GAME_HEIGHT + 110;
 const PRESS_TEXT_Y = 850;
 /** Info cards shown via the info buttons disappear after this many ms. */
 const INFO_CARD_TIME = 4000;
+/** When nobody moves or clicks for this long during the game, the explanation card comes up again. */
+const IDLE_HINT_TIME = 15_000;
 
 /** Info buttons in the bottom corners: blue = player 1 (left), red = player 2 (right). */
 const INFO_BUTTONS = {
@@ -174,6 +180,8 @@ export class GeschiedenisScene extends Scene {
   private lastPointer = new PMath.Vector2();
   /** The "pick up" and "place" cards show up by themselves only the first time. */
   private seenCard = { pickUp: false, place: false };
+  /** Scene time of the last movement or click (for the idle hint). */
+  private lastActivity = 0;
 
   private titleObjects: GameObjects.Image[] = [];
   private introObjects: GameObjects.Image[] = [];
@@ -182,6 +190,8 @@ export class GeschiedenisScene extends Scene {
   private introTrowel?: GameObjects.Image;
   private introPress?: GameObjects.Text;
   private infoButtons: GameObjects.Image[] = [];
+  /** The players' hands, on the title, intro and end screens (while playing, the tools are the cursor). */
+  private pointers!: PlayerPointers;
   private card?: GameObjects.Image;
   private overlay!: GameObjects.Rectangle;
   private backButton?: GameObjects.Image;
@@ -208,6 +218,7 @@ export class GeschiedenisScene extends Scene {
     image('gs-dust3', 'dust3.png');
     // Loaded as text: it is split into one image per letter (see svgParts.ts).
     this.load.text('gs-title', PATH + 'geschiedenis.svg');
+    PlayerPointers.preload(this);
 
     // SVGs are turned into an image when loading (max 4096 px for GPU support).
     this.load.svg('gs-background', PATH + 'background.svg', { width: 3840, height: 2560 });
@@ -233,6 +244,7 @@ export class GeschiedenisScene extends Scene {
     this.active = undefined;
     this.signs = [];
     this.seenCard = { pickUp: false, place: false };
+    this.lastActivity = this.time.now;
     this.titleObjects = [];
     this.introObjects = [];
     this.introBrush = undefined;
@@ -250,9 +262,14 @@ export class GeschiedenisScene extends Scene {
       .setDepth(DEPTH.overlay)
       .setAlpha(0);
 
-    this.trowel = this.makeTool('gs-trowel', 0.08, 0.15, 274, 'gs-player1', 230, 50);
+    // Tip = the point of the tool that digs/brushes (as a fraction of the image), then the width on screen.
+    this.trowel = this.makeTool('gs-trowel', 0.12, 0.12, 274, 'gs-player1', 230, 50);
     this.brush = this.makeTool('gs-brush', 0.2, 0.85, 245, 'gs-player2', 170, -250);
     this.setTool('none');
+
+    // Hands as the cursor until the game starts (then the trowel and brush take over).
+    this.pointers = new PlayerPointers(this);
+    this.pointers.show();
 
     this.input.on('pointermove', this.onPointerMove, this);
     this.input.on('pointerup', this.pressButton, this);
@@ -267,7 +284,8 @@ export class GeschiedenisScene extends Scene {
       .image(110, 84, 'gs-back')
       .setScale(95 / 335)
       .setDepth(DEPTH.backButton)
-      .setInteractive({ useHandCursor: true })
+      // No system hand cursor: the players' own hands are shown instead.
+      .setInteractive()
       .on('pointerup', (_p: Input.Pointer, _x: number, _y: number, event: Types.Input.EventData) => {
         // Don't let this click also count as "the button".
         event.stopPropagation();
@@ -291,6 +309,7 @@ export class GeschiedenisScene extends Scene {
     // Cap the distance so jumping the pointer around doesn't count as digging.
     const moved = Math.min(PMath.Distance.Between(this.lastPointer.x, this.lastPointer.y, x, y), 100);
     this.lastPointer.set(x, y);
+    if (moved > 0) this.lastActivity = this.time.now;
 
     this.trowel.setPosition(x, y);
     this.brush.setPosition(x, y);
@@ -308,6 +327,7 @@ export class GeschiedenisScene extends Scene {
 
   /** "The button" (mouse click for now, ESP32 button later). */
   private pressButton() {
+    this.lastActivity = this.time.now;
     // Any button press puts away an info card that is still up.
     this.hideCard();
 
@@ -322,8 +342,6 @@ export class GeschiedenisScene extends Scene {
   // ---------------------------------------------------------------------------
 
   private async showTitle() {
-    this.input.setDefaultCursor('default');
-
     const title = await loadSvgParts(this, this.cache.text.get('gs-title'), 'gs-title', RENDER_SCALE);
     // The player may have left the scene while the letters were being prepared.
     if (!this.sys.isActive() || this.state !== 'title') return;
@@ -345,8 +363,10 @@ export class GeschiedenisScene extends Scene {
     // Then the tools come in and show what they do. They stay for the intro.
     const toolsDelay = 400 + letters.length * TITLE_LETTER_DELAY;
     const { brush: b, trowel: t } = TOOL_SPOTS.title;
-    this.introBrush = this.add.image(b.x, b.y, 'gs-brush').setScale(b.scale).setDepth(DEPTH.card);
-    this.introTrowel = this.add.image(t.x, t.y, 'gs-trowel').setScale(t.scale).setDepth(DEPTH.card);
+    this.introBrush = this.add.image(b.x, b.y, 'gs-brush').setDepth(DEPTH.card);
+    this.introBrush.setScale(b.width / this.introBrush.width);
+    this.introTrowel = this.add.image(t.x, t.y, 'gs-trowel').setDepth(DEPTH.card);
+    this.introTrowel.setScale(t.width / this.introTrowel.width);
     const brush = this.introBrush;
     const trowel = this.introTrowel;
     slideIn(this, brush, 'left', { delay: toolsDelay, sway: false, onComplete: () => this.brushing(brush) });
@@ -380,7 +400,7 @@ export class GeschiedenisScene extends Scene {
   /** Glide a tool to a new spot, then start its movement again. */
   private moveTool(
     tool: GameObjects.Image | undefined,
-    spot: { x: number; y: number; scale: number },
+    spot: { x: number; y: number; width: number },
     then: (tool: GameObjects.Image) => void,
   ) {
     if (!tool) return;
@@ -389,7 +409,7 @@ export class GeschiedenisScene extends Scene {
       targets: tool,
       x: spot.x,
       y: spot.y,
-      scale: spot.scale,
+      scale: spot.width / tool.width,
       angle: 0,
       duration: 900,
       ease: 'Back.InOut',
@@ -422,7 +442,6 @@ export class GeschiedenisScene extends Scene {
 
   private showIntro() {
     this.state = 'intro';
-    this.input.setDefaultCursor('default');
 
     const sign = this.add
       .image(GAME_WIDTH / 2, CARD_BOTTOM_Y, 'gs-intro-sign')
@@ -509,10 +528,30 @@ export class GeschiedenisScene extends Scene {
     this.buryNext();
 
     this.time.delayedCall(1100, () => {
+      // The hand turns into the trowel: the game has started.
+      this.pointers.hide();
       this.input.setDefaultCursor('none');
       this.setTool('trowel');
       this.state = 'dig';
+      this.lastActivity = this.time.now;
     });
+  }
+
+  /** Every frame: bring the explanation back when the players seem stuck. */
+  update() {
+    // Whose turn is it? Player 1 digs and picks up, player 2 brushes and places.
+    const player =
+      this.state === 'dig' || this.state === 'pickUp'
+        ? 'p1'
+        : this.state === 'clean' || this.state === 'place'
+          ? 'p2'
+          : undefined;
+    if (!player) return;
+
+    const now = this.time.now;
+    if (now - this.lastActivity < IDLE_HINT_TIME) return;
+    this.lastActivity = now; // next hint after another IDLE_HINT_TIME of nothing
+    if (!this.card) this.showInfo(player);
   }
 
   /** A card on a stick that rises from below and sways. */
@@ -638,6 +677,10 @@ export class GeschiedenisScene extends Scene {
       .setAlpha(0)
       .setDepth(DEPTH.buried);
     this.buried = { def, container, item, dust: [], effort: 0 };
+
+    // Real finds (and the book) are dusty from the start, so the dust shows up
+    // while digging. Joke finds get no dust: they don't need cleaning.
+    if (def.kind !== 'fake') this.addDust(this.buried);
   }
 
   /** Random spot in the dig area, not right under the trowel. */
@@ -692,7 +735,6 @@ export class GeschiedenisScene extends Scene {
     // Real find (or the book): it comes up dusty; player 1 has to pick it up.
     this.state = 'pickUp';
     this.active = find;
-    this.addDust(find);
     hop(this, container);
 
     // Explain the first time only; after that the info button helps.
@@ -879,8 +921,8 @@ export class GeschiedenisScene extends Scene {
     open.setScale(scale * 0.6);
     this.tweens.add({ targets: open, alpha: 1, scale, duration: 600, ease: 'Back.Out' });
 
-    // Show the normal cursor and the back button again.
-    this.input.setDefaultCursor('default');
+    // The hands come back (to click the back button), and the back button goes on top.
+    this.pointers.show();
     this.backButton?.setDepth(DEPTH.active + 2);
   }
 }

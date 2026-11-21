@@ -1,10 +1,12 @@
 /*
  * Small HTML overlay for the controller: connect button, mode label,
- * debug panel (key D) and the pointer images. Kept outside Phaser so it
- * works the same in every scene.
+ * debug panel (key D) and an arrow cursor. Kept outside Phaser so it works
+ * the same in every scene.
+ *
+ * The players' hands are drawn by the scenes themselves (src/playerPointers.ts);
+ * the arrow is only for screens without hands or tools.
  */
 
-import { GAME_HEIGHT } from '../config';
 import type { InputMode } from './InputManager';
 
 /** Elements marked with this attribute are never treated as game clicks. */
@@ -12,16 +14,6 @@ export const UI_ATTRIBUTE = 'data-kb-ui';
 
 /** Arrow shown at the tilt cursor (one-pointer mode). Its tip is the click point. */
 const ARROW = { src: 'assets/ui/cursor.svg', size: 44, tipX: 3, tipY: 3 };
-
-/** Hands for the two players (split mode, e.g. the genre screen). */
-const HANDS = {
-  1: { src: 'assets/general/pointer-player1.svg' },
-  2: { src: 'assets/general/pointer-player2.svg' },
-};
-/** Hand image: 391 x 452, fingertip (the click point) at 147, 2. */
-const HAND = { width: 391, height: 452, tipX: 147, tipY: 2 };
-/** Height of a hand on screen, in game pixels (the game is 1280 high). */
-const HAND_HEIGHT = 110;
 
 const STYLE = `
   body.kb-tilt canvas, body.kb-split canvas { cursor: none !important; }
@@ -51,7 +43,6 @@ export class ControllerUI {
   private readonly button: HTMLButtonElement;
   private readonly debug: HTMLPreElement;
   private readonly arrow: HTMLImageElement;
-  private readonly hands: Record<1 | 2, HTMLImageElement>;
   private flashTimer?: number;
   private mode: InputMode = 'mouse';
   private split = false;
@@ -84,7 +75,6 @@ export class ControllerUI {
 
     this.arrow = this.makePointer(ARROW.src);
     this.arrow.style.width = this.arrow.style.height = `${ARROW.size}px`;
-    this.hands = { 1: this.makePointer(HANDS[1].src), 2: this.makePointer(HANDS[2].src) };
 
     document.body.append(panel, this.debug);
     this.setMode('mouse');
@@ -96,7 +86,7 @@ export class ControllerUI {
     this.showLabel();
   }
 
-  /** Split mode: two hands instead of the system cursor. */
+  /** Split mode: player 1 on the controller, player 2 on the mouse (shown in the label). */
   setSplit(split: boolean) {
     this.split = split;
     document.body.classList.toggle('kb-split', split);
@@ -130,16 +120,6 @@ export class ControllerUI {
   /** The arrow, with its tip at (clientX, clientY). */
   setArrow(clientX: number, clientY: number, visible: boolean) {
     this.place(this.arrow, clientX - ARROW.tipX, clientY - ARROW.tipY, visible);
-  }
-
-  /** A player's hand, with the fingertip at (clientX, clientY). */
-  setHand(player: 1 | 2, clientX: number, clientY: number, canvasHeight: number, visible: boolean) {
-    const hand = this.hands[player];
-    const height = (HAND_HEIGHT / GAME_HEIGHT) * canvasHeight;
-    const width = (height * HAND.width) / HAND.height;
-    hand.style.height = `${height}px`;
-    hand.style.width = `${width}px`;
-    this.place(hand, clientX - (HAND.tipX / HAND.width) * width, clientY - (HAND.tipY / HAND.height) * height, visible);
   }
 
   private makePointer(src: string): HTMLImageElement {

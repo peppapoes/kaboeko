@@ -80,7 +80,6 @@ class InputManager extends Events.EventEmitter {
   private splitHover?: GameObjects.GameObject;
 
   private mouse: Point = { x: GAME_WIDTH / 2, y: GAME_HEIGHT / 2 };
-  private mouseSeen = false;
   private cursor: Point = { x: GAME_WIDTH / 2, y: GAME_HEIGHT / 2 };
   private velocity: Point = { x: 0, y: 0 };
 
@@ -206,7 +205,6 @@ class InputManager extends Events.EventEmitter {
     if (event.target instanceof Element && event.target.closest(`[${UI_ATTRIBUTE}]`)) return; // our buttons
 
     this.mouse = this.toGame(event.clientX, event.clientY);
-    this.mouseSeen = true;
     const onGame = event.target === this.canvas;
 
     // Mouse mode, or split mode (mouse = player 2): normal mouse, just report clicks.
@@ -506,27 +504,23 @@ class InputManager extends Events.EventEmitter {
     this.emit('cursormove', { player: TILT_PLAYER, ...this.cursor });
   }
 
-  /** Our pointer images: one arrow in tilt mode, or one hand per player in split mode. */
+  /**
+   * The arrow at the tilt cursor, for screens that draw no cursor of their own.
+   * (Screens with the players' hands or tools hide the system cursor; they draw
+   * their own, see src/playerPointers.ts.)
+   */
   private updatePointers() {
     const ui = this.ui;
     const canvas = this.canvas;
     if (!ui || !canvas) return;
-    const rect = canvas.getBoundingClientRect();
-    const tilt = this.mode === 'tilt';
+    const tip = this.toClient(this.cursor);
+    const sceneHasOwnCursor = canvas.style.cursor === 'none';
+    ui.setArrow(tip.x, tip.y, this.mode === 'tilt' && !this.splitScene && !sceneHasOwnCursor);
+  }
 
-    if (this.splitScene) {
-      ui.setArrow(0, 0, false);
-      const p1 = this.toClient(this.cursor);
-      const p2 = this.toClient(this.mouse);
-      ui.setHand(1, p1.x, p1.y, rect.height, tilt);
-      ui.setHand(2, p2.x, p2.y, rect.height, this.mouseSeen);
-    } else {
-      ui.setHand(1, 0, 0, 0, false);
-      ui.setHand(2, 0, 0, 0, false);
-      // Show our arrow in tilt mode, unless the scene draws its own cursor (it then hides the system cursor).
-      const tip = this.toClient(this.cursor);
-      ui.setArrow(tip.x, tip.y, tilt && canvas.style.cursor !== 'none');
-    }
+  /** Is this scene in split mode (player 1 on the controller, player 2 on the mouse)? */
+  isSplit(scene: Scene): boolean {
+    return this.splitScene === scene;
   }
 
   private clamp(point: Point): Point {
