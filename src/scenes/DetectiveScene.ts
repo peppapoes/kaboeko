@@ -34,7 +34,7 @@ const TITLE_TIME = 4500;
 /** Where the net (player 2) and the magnifying glass (player 1) are; width = size on screen. */
 const TOOL_SPOTS = {
   title: { net: { x: 234, y: 406, width: 370 }, glass: { x: 1444, y: 801, width: 268 } },
-  intro: { net: { x: 1456, y: 405, width: 370 }, glass: { x: 612, y: 671, width: 268 } },
+  intro: { net: { x: 1456, y: 405, width: 370 }, glass: { x: 660, y: 740, width: 268 } },
 };
 
 /** Cards and sign stand with the end of their stick/post below the screen. */
@@ -46,7 +46,8 @@ const CARDS = {
 const SIGN = { x: GAME_WIDTH / 2, scale: 0.887 };
 
 /** Draw order (higher = on top). */
-const DEPTH = { background: 0, content: 5, backButton: 10 };
+// The net and magnifying glass are in front of the cards.
+const DEPTH = { background: 0, content: 5, tools: 6, backButton: 10 };
 
 type State = 'title' | 'titleReady' | 'busy' | 'intro' | 'introReady';
 
@@ -145,9 +146,9 @@ export class DetectiveScene extends Scene {
     // Then the tools come in. They stay for the intro.
     const toolsDelay = 400 + this.letters.length * TITLE_LETTER_DELAY;
     const { net: n, glass: g } = TOOL_SPOTS.title;
-    this.net = this.add.image(n.x, n.y, 'dt-net').setDepth(DEPTH.content);
+    this.net = this.add.image(n.x, n.y, 'dt-net').setDepth(DEPTH.tools);
     this.net.setScale(n.width / this.net.width);
-    this.glass = this.add.image(g.x, g.y, 'dt-glass').setDepth(DEPTH.content);
+    this.glass = this.add.image(g.x, g.y, 'dt-glass').setDepth(DEPTH.tools);
     this.glass.setScale(g.width / this.glass.width);
     const net = this.net;
     const glass = this.glass;
