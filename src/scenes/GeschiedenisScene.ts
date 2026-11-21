@@ -1,6 +1,7 @@
 import { GameObjects, Input, Math as PMath, Scene, type Types } from 'phaser';
 import { GAME_HEIGHT, GAME_WIDTH, RENDER_SCALE, setupCamera } from '../config';
 import { dropIn, hop, popIn, riseIn, setRestAngle, sinkOut, slideIn, slideOut, swing } from '../puppet';
+import { PlayerPointers } from '../playerPointers';
 import { loadSvgParts } from '../svgParts';
 import { addPressButtonText } from '../ui';
 
@@ -186,6 +187,8 @@ export class GeschiedenisScene extends Scene {
   private introTrowel?: GameObjects.Image;
   private introPress?: GameObjects.Text;
   private infoButtons: GameObjects.Image[] = [];
+  /** The players' hands, on the title, intro and end screens (while playing, the tools are the cursor). */
+  private pointers!: PlayerPointers;
   private card?: GameObjects.Image;
   private overlay!: GameObjects.Rectangle;
   private backButton?: GameObjects.Image;
@@ -212,6 +215,7 @@ export class GeschiedenisScene extends Scene {
     image('gs-dust3', 'dust3.png');
     // Loaded as text: it is split into one image per letter (see svgParts.ts).
     this.load.text('gs-title', PATH + 'geschiedenis.svg');
+    PlayerPointers.preload(this);
 
     // SVGs are turned into an image when loading (max 4096 px for GPU support).
     this.load.svg('gs-background', PATH + 'background.svg', { width: 3840, height: 2560 });
@@ -259,6 +263,10 @@ export class GeschiedenisScene extends Scene {
     this.brush = this.makeTool('gs-brush', 0.2, 0.85, 245, 'gs-player2', 170, -250);
     this.setTool('none');
 
+    // Hands as the cursor until the game starts (then the trowel and brush take over).
+    this.pointers = new PlayerPointers(this);
+    this.pointers.show();
+
     this.input.on('pointermove', this.onPointerMove, this);
     this.input.on('pointerup', this.pressButton, this);
     this.events.once('shutdown', () => {
@@ -272,7 +280,8 @@ export class GeschiedenisScene extends Scene {
       .image(110, 84, 'gs-back')
       .setScale(95 / 335)
       .setDepth(DEPTH.backButton)
-      .setInteractive({ useHandCursor: true })
+      // No system hand cursor: the players' own hands are shown instead.
+      .setInteractive()
       .on('pointerup', (_p: Input.Pointer, _x: number, _y: number, event: Types.Input.EventData) => {
         // Don't let this click also count as "the button".
         event.stopPropagation();
@@ -329,8 +338,6 @@ export class GeschiedenisScene extends Scene {
   // ---------------------------------------------------------------------------
 
   private async showTitle() {
-    this.input.setDefaultCursor('default');
-
     const title = await loadSvgParts(this, this.cache.text.get('gs-title'), 'gs-title', RENDER_SCALE);
     // The player may have left the scene while the letters were being prepared.
     if (!this.sys.isActive() || this.state !== 'title') return;
@@ -429,7 +436,6 @@ export class GeschiedenisScene extends Scene {
 
   private showIntro() {
     this.state = 'intro';
-    this.input.setDefaultCursor('default');
 
     const sign = this.add
       .image(GAME_WIDTH / 2, CARD_BOTTOM_Y, 'gs-intro-sign')
@@ -516,6 +522,8 @@ export class GeschiedenisScene extends Scene {
     this.buryNext();
 
     this.time.delayedCall(1100, () => {
+      // The hand turns into the trowel: the game has started.
+      this.pointers.hide();
       this.input.setDefaultCursor('none');
       this.setTool('trowel');
       this.state = 'dig';
@@ -907,8 +915,8 @@ export class GeschiedenisScene extends Scene {
     open.setScale(scale * 0.6);
     this.tweens.add({ targets: open, alpha: 1, scale, duration: 600, ease: 'Back.Out' });
 
-    // Show the normal cursor and the back button again.
-    this.input.setDefaultCursor('default');
+    // The hands come back (to click the back button), and the back button goes on top.
+    this.pointers.show();
     this.backButton?.setDepth(DEPTH.active + 2);
   }
 }
