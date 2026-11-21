@@ -44,6 +44,7 @@ const ARRIVE = { ease: 'Back.Out', easeParams: [1.2] };
 /** Gentle never-ending sway, like a puppet held by a hand. */
 export function sway(scene: Scene, target: Puppet, amount = 1.2, duration = PMath.Between(2200, 3000)) {
   stopSway(target);
+  stopSwing(target);
   const phase = Math.random() * Math.PI * 2;
   const base = restAngle(target);
   const tween = scene.tweens.addCounter({
@@ -120,6 +121,7 @@ export function popIn(scene: Scene, target: Puppet, opts: MoveOptions = {}) {
 export function sinkOut(scene: Scene, target: Puppet, opts: MoveOptions = {}) {
   const { delay = 0, duration = 500, distance = 900 } = opts;
   stopSway(target);
+  stopSwing(target);
   scene.tweens.killTweensOf(target);
   scene.tweens.add({
     targets: target,
@@ -136,6 +138,7 @@ export function sinkOut(scene: Scene, target: Puppet, opts: MoveOptions = {}) {
 export function slideOut(scene: Scene, target: Puppet, to: 'left' | 'right', opts: MoveOptions = {}) {
   const { delay = 0, duration = 500, distance = 1200 } = opts;
   stopSway(target);
+  stopSwing(target);
   scene.tweens.killTweensOf(target);
   scene.tweens.add({
     targets: target,
@@ -147,18 +150,44 @@ export function slideOut(scene: Scene, target: Puppet, to: 'left' | 'right', opt
   });
 }
 
-/** A push that makes the puppet swing and settle again (e.g. when something lands on it). */
+/**
+ * A push that makes the puppet swing and settle again (e.g. on hover, or when
+ * something lands on it). Starts smoothly from wherever the puppet hangs now,
+ * like a real pendulum that gets a nudge, and dies out.
+ */
 export function swing(scene: Scene, target: Puppet, strength = 6) {
   stopSway(target);
+  stopSwing(target);
+
   const base = restAngle(target);
-  scene.tweens.add({
-    targets: target,
-    angle: { from: base + randomSide() * strength, to: base },
-    duration: 1600,
-    ease: 'Elastic.Out',
-    easeParams: [1, 0.35],
-    onComplete: () => sway(scene, target),
+  const start = target.angle - base;
+  const side = randomSide();
+  const duration = 1800;
+  /** Swings per second, and how quickly it calms down. */
+  const omega = 2 * Math.PI * 1.1;
+  const damping = 2.5;
+
+  const tween = scene.tweens.addCounter({
+    from: 0,
+    to: duration / 1000,
+    duration,
+    onUpdate: (t) => {
+      const time = t.getValue() ?? 0;
+      const decay = Math.exp(-time * damping);
+      target.angle = base + decay * (start * Math.cos(omega * time) + side * strength * Math.sin(omega * time));
+    },
+    onComplete: () => {
+      target.setData('swing', undefined);
+      sway(scene, target);
+    },
   });
+  target.setData('swing', tween);
+  target.once('destroy', () => tween.remove());
+}
+
+function stopSwing(target: Puppet) {
+  (target.getData('swing') as Tweens.Tween | undefined)?.remove();
+  target.setData('swing', undefined);
 }
 
 /** Small jump with a wiggle (e.g. when something pops out of the sand). */

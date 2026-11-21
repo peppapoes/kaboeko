@@ -94,6 +94,8 @@ const CARD_BOTTOM_Y = GAME_HEIGHT + 110;
 const PRESS_TEXT_Y = 850;
 /** Info cards shown via the info buttons disappear after this many ms. */
 const INFO_CARD_TIME = 4000;
+/** When nobody moves or clicks for this long during the game, the explanation card comes up again. */
+const IDLE_HINT_TIME = 15_000;
 
 /** Info buttons in the bottom corners: blue = player 1 (left), red = player 2 (right). */
 const INFO_BUTTONS = {
@@ -174,6 +176,8 @@ export class GeschiedenisScene extends Scene {
   private lastPointer = new PMath.Vector2();
   /** The "pick up" and "place" cards show up by themselves only the first time. */
   private seenCard = { pickUp: false, place: false };
+  /** Scene time of the last movement or click (for the idle hint). */
+  private lastActivity = 0;
 
   private titleObjects: GameObjects.Image[] = [];
   private introObjects: GameObjects.Image[] = [];
@@ -233,6 +237,7 @@ export class GeschiedenisScene extends Scene {
     this.active = undefined;
     this.signs = [];
     this.seenCard = { pickUp: false, place: false };
+    this.lastActivity = this.time.now;
     this.titleObjects = [];
     this.introObjects = [];
     this.introBrush = undefined;
@@ -291,6 +296,7 @@ export class GeschiedenisScene extends Scene {
     // Cap the distance so jumping the pointer around doesn't count as digging.
     const moved = Math.min(PMath.Distance.Between(this.lastPointer.x, this.lastPointer.y, x, y), 100);
     this.lastPointer.set(x, y);
+    if (moved > 0) this.lastActivity = this.time.now;
 
     this.trowel.setPosition(x, y);
     this.brush.setPosition(x, y);
@@ -308,6 +314,7 @@ export class GeschiedenisScene extends Scene {
 
   /** "The button" (mouse click for now, ESP32 button later). */
   private pressButton() {
+    this.lastActivity = this.time.now;
     // Any button press puts away an info card that is still up.
     this.hideCard();
 
@@ -512,7 +519,25 @@ export class GeschiedenisScene extends Scene {
       this.input.setDefaultCursor('none');
       this.setTool('trowel');
       this.state = 'dig';
+      this.lastActivity = this.time.now;
     });
+  }
+
+  /** Every frame: bring the explanation back when the players seem stuck. */
+  update() {
+    // Whose turn is it? Player 1 digs and picks up, player 2 brushes and places.
+    const player =
+      this.state === 'dig' || this.state === 'pickUp'
+        ? 'p1'
+        : this.state === 'clean' || this.state === 'place'
+          ? 'p2'
+          : undefined;
+    if (!player) return;
+
+    const now = this.time.now;
+    if (now - this.lastActivity < IDLE_HINT_TIME) return;
+    this.lastActivity = now; // next hint after another IDLE_HINT_TIME of nothing
+    if (!this.card) this.showInfo(player);
   }
 
   /** A card on a stick that rises from below and sways. */
@@ -638,6 +663,10 @@ export class GeschiedenisScene extends Scene {
       .setAlpha(0)
       .setDepth(DEPTH.buried);
     this.buried = { def, container, item, dust: [], effort: 0 };
+
+    // Real finds (and the book) are dusty from the start, so the dust shows up
+    // while digging. Joke finds get no dust: they don't need cleaning.
+    if (def.kind !== 'fake') this.addDust(this.buried);
   }
 
   /** Random spot in the dig area, not right under the trowel. */
@@ -692,7 +721,6 @@ export class GeschiedenisScene extends Scene {
     // Real find (or the book): it comes up dusty; player 1 has to pick it up.
     this.state = 'pickUp';
     this.active = find;
-    this.addDust(find);
     hop(this, container);
 
     // Explain the first time only; after that the info button helps.

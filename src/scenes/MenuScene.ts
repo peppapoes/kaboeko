@@ -1,6 +1,7 @@
-import { GameObjects, Scene, Time } from 'phaser';
+import { GameObjects, Scene, Time, Tweens } from 'phaser';
 import { GAME_HEIGHT, GAME_WIDTH, RENDER_SCALE, setupCamera } from '../config';
 import { dropIn, riseIn, sinkOut, stopSway, sway, swing } from '../puppet';
+import { PlayerPointers } from '../playerPointers';
 import { loadSvgParts } from '../svgParts';
 import { addPressButtonText } from '../ui';
 
@@ -31,6 +32,9 @@ const PRESS_TEXT = { x: GAME_WIDTH / 2, y: 880 };
 /** Back to the title screen after this many ms without anyone moving or clicking. */
 const IDLE_TIME = 30_000;
 
+/** A book reacts to a hover at most once per this many ms. */
+const HOVER_COOLDOWN = 700;
+
 /** Size of the genre books. */
 const GENRE_SCALE = 0.9;
 
@@ -42,18 +46,22 @@ interface Genre {
   /** Where the string is (x) and where the label is (y) on screen. */
   x: number;
   labelY: number;
-  /** Where the string and the label center are inside the SVG (in SVG pixels). */
+  /** Where the string, the label center and the book center are inside the SVG (in SVG pixels). */
   svgStringX: number;
   svgLabelY: number;
+  svgBookY: number;
 }
 
 const GENRES: Genre[] = [
-  { key: 'menu-genre-geschiedenis', file: 'geschiedenis.svg', scene: 'GeschiedenisScene', x: 240, labelY: 293, svgStringX: 206.5, svgLabelY: 462 },
-  { key: 'menu-genre-grappig', file: 'grappig.svg', x: 537, labelY: 658, svgStringX: 323.5, svgLabelY: 1054 },
-  { key: 'menu-genre-mystery', file: 'mystery.svg', x: 847, labelY: 238, svgStringX: 434.5, svgLabelY: 745 },
-  { key: 'menu-genre-adventure', file: 'adventure.svg', x: 1230, labelY: 468, svgStringX: 206.5, svgLabelY: 1179 },
-  { key: 'menu-genre-fantasy', file: 'fantasy.svg', x: 1604, labelY: 256, svgStringX: 148.5, svgLabelY: 728 },
+  { key: 'menu-genre-geschiedenis', file: 'geschiedenis.svg', scene: 'GeschiedenisScene', x: 240, labelY: 293, svgStringX: 206.5, svgLabelY: 462, svgBookY: 763 },
+  { key: 'menu-genre-grappig', file: 'grappig.svg', x: 537, labelY: 658, svgStringX: 323.5, svgLabelY: 1054, svgBookY: 1345 },
+  { key: 'menu-genre-mystery', file: 'mystery.svg', x: 847, labelY: 238, svgStringX: 434.5, svgLabelY: 745, svgBookY: 1011 },
+  { key: 'menu-genre-adventure', file: 'adventure.svg', x: 1230, labelY: 468, svgStringX: 206.5, svgLabelY: 1179, svgBookY: 1441 },
+  { key: 'menu-genre-fantasy', file: 'fantasy.svg', x: 1604, labelY: 256, svgStringX: 148.5, svgLabelY: 728, svgBookY: 1025 },
 ];
+
+/** How much bigger a book gets while a hand is over it (1.05 = 5%). */
+const HOVER_GROW = 1.05;
 
 /** "Kies een genre" sign: center x, bottom of the post (below the screen), size. */
 const GENRE_SIGN = { x: 1499, bottomY: 1320, scale: 0.865 };
@@ -68,6 +76,8 @@ export class MenuScene extends Scene {
   private genreBooks: GameObjects.Image[] = [];
   private genreSign?: GameObjects.Image;
   private idleTimer?: Time.TimerEvent;
+  /** The players' hands on the genre screen. */
+  private pointers!: PlayerPointers;
 
   constructor() {
     super('MenuScene');
@@ -86,6 +96,7 @@ export class MenuScene extends Scene {
     GENRES.forEach((genre) => svg(genre.key, genre.file, { scale: RENDER_SCALE }));
     // Loaded as text: split into one image per letter (see svgParts.ts).
     this.load.text('menu-title', PATH + 'landvankaboeko.svg');
+    PlayerPointers.preload(this);
   }
 
   create(data: { skipTitle?: boolean }) {
@@ -95,7 +106,9 @@ export class MenuScene extends Scene {
     this.genreBooks = [];
     this.genreSign = undefined;
     this.idleTimer = undefined;
-    this.input.setDefaultCursor('default');
+    // The players' hands instead of the mouse cursor, in the whole menu (the mouse is player 2).
+    this.pointers = new PlayerPointers(this);
+    this.pointers.show();
 
     this.add.image(0, 0, 'menu-background').setOrigin(0).setDisplaySize(GAME_WIDTH, GAME_HEIGHT).setDepth(DEPTH.background);
     this.addPaperEdges();
@@ -220,8 +233,10 @@ export class MenuScene extends Scene {
       this.tweens.add({ targets: image, alpha: 1, delay: 100 + i * 90, duration: 400 });
 
       image
-        .setInteractive({ pixelPerfect: true, useHandCursor: true })
-        .on('pointerover', () => this.state === 'genres' && swing(this, image, 2))
+        // No system hand cursor: the players' own hands are shown instead.
+        .setInteractive({ pixelPerfect: true })
+        .on('pointerover', () => this.hoverBook(image, genre, true))
+        .on('pointerout', () => this.hoverBook(image, genre, false))
         .on('pointerup', () => this.chooseGenre(genre, image));
       this.genreBooks.push(image);
     });
@@ -239,6 +254,38 @@ export class MenuScene extends Scene {
       this.state = 'genres';
       this.restartIdleTimer();
     });
+  }
+
+  /**
+   * A hand goes over a book (over = true) or leaves it: the book grows a little
+   * and gets a small nudge. Moving over the string, the label and the book counts
+   * as one hover, so the book doesn't restart its swing each time.
+   */
+  private hoverBook(image: GameObjects.Image, genre: Genre, over: boolean) {
+    if (this.state !== 'genres') return;
+
+    // Grow around the middle of the book. The book hangs from the top of its string
+    // (above the screen), so move it up a bit while it grows, to keep the book in place.
+    const grow = over ? HOVER_GROW : 1;
+    const baseY = genre.labelY - genre.svgLabelY * GENRE_SCALE;
+    const bookCenter = genre.svgBookY * GENRE_SCALE;
+    (image.getData('hoverTween') as Tweens.Tween | undefined)?.remove();
+    image.setData(
+      'hoverTween',
+      this.tweens.add({
+        targets: image,
+        scale: (GENRE_SCALE / RENDER_SCALE) * grow,
+        y: baseY - (grow - 1) * bookCenter,
+        duration: 220,
+        ease: 'Sine.Out',
+      }),
+    );
+
+    if (!over) return;
+    const now = this.time.now;
+    if (now - ((image.getData('hoveredAt') as number | undefined) ?? -Infinity) < HOVER_COOLDOWN) return;
+    image.setData('hoveredAt', now);
+    swing(this, image, 2.5);
   }
 
   /** Back to the title when nobody has done anything for a while. */
