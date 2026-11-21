@@ -7,7 +7,8 @@ import type { Scene } from 'phaser';
  * Load the SVG as text first:   this.load.text('my-title', 'assets/title.svg');
  * Then in create():             const title = await loadSvgParts(this, this.cache.text.get('my-title'), 'my-title');
  *
- * Note: paths must be at the top level of the SVG (or in groups without a transform).
+ * Note: paths must be at the top level of the SVG, or in groups without a transform.
+ * Filters on those groups (like a drop shadow) are kept.
  */
 
 export interface SvgPart {
@@ -28,6 +29,8 @@ export interface SvgParts {
 const SVG_NS = 'http://www.w3.org/2000/svg';
 /** Extra space around each part so edges aren't cut off. */
 const PADDING = 6;
+/** More space when a part has a filter (e.g. a drop shadow sticks out beyond the shape). */
+const FILTER_PADDING = 30;
 
 /**
  * @param resolution How many texture pixels per SVG pixel (use RENDER_SCALE for sharp output,
@@ -49,18 +52,30 @@ export async function loadSvgParts(scene: Scene, svgText: string, keyPrefix: str
   try {
     const parts = await Promise.all(
       paths.map(async (path, i) => {
+        // Keep the filters (e.g. a drop shadow) of the groups the path sits in.
+        let markup = path.outerHTML;
+        let filtered = !!path.getAttribute('filter');
+        for (let parent: Element | null = path.parentElement; parent && parent !== holder; parent = parent.parentElement) {
+          const filter = parent.getAttribute('filter');
+          if (filter) {
+            markup = `<g filter="${filter}">${markup}</g>`;
+            filtered = true;
+          }
+        }
+
+        const padding = filtered ? FILTER_PADDING : PADDING;
         const box = path.getBBox();
-        const x = box.x - PADDING;
-        const y = box.y - PADDING;
-        const w = box.width + PADDING * 2;
-        const h = box.height + PADDING * 2;
+        const x = box.x - padding;
+        const y = box.y - padding;
+        const w = box.width + padding * 2;
+        const h = box.height + padding * 2;
         const key = `${keyPrefix}-${i}`;
 
         // Textures stay in memory, so a restarted scene can reuse them.
         if (!scene.textures.exists(key)) {
           const svg =
             `<svg xmlns="${SVG_NS}" width="${w * resolution}" height="${h * resolution}" viewBox="${x} ${y} ${w} ${h}">` +
-            `${defs}${path.outerHTML}</svg>`;
+            `${defs}${markup}</svg>`;
           const image = new Image();
           image.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
           await image.decode();

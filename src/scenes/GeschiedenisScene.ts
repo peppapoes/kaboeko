@@ -55,11 +55,14 @@ const TITLE_LETTER_DELAY = 70;
 /** The title goes on by itself after this many ms (a button press goes on sooner). */
 const TITLE_TIME = 4500;
 
-/** Where the brush and trowel are on the title screen and in the intro. */
+/**
+ * Where the brush and trowel are on the title screen and in the intro.
+ * width = how wide they are on screen (game pixels), whatever the size of the image file.
+ */
 const TOOL_SPOTS = {
-  title: { brush: { x: 581, y: 419, scale: 0.22 }, trowel: { x: 1459, y: 830, scale: 0.21 } },
+  title: { brush: { x: 581, y: 419, width: 194 }, trowel: { x: 1459, y: 830, width: 204 } },
   // Each tool next to its player's card: trowel (player 1) left, brush (player 2) right.
-  intro: { brush: { x: 1206, y: 521, scale: 0.29 }, trowel: { x: 687, y: 588, scale: 0.25 } },
+  intro: { brush: { x: 1206, y: 521, width: 256 }, trowel: { x: 687, y: 588, width: 243 } },
 };
 
 // Signs at the top of the screen (they hang from their post).
@@ -259,7 +262,8 @@ export class GeschiedenisScene extends Scene {
       .setDepth(DEPTH.overlay)
       .setAlpha(0);
 
-    this.trowel = this.makeTool('gs-trowel', 0.08, 0.15, 274, 'gs-player1', 230, 50);
+    // Tip = the point of the tool that digs/brushes (as a fraction of the image), then the width on screen.
+    this.trowel = this.makeTool('gs-trowel', 0.12, 0.12, 274, 'gs-player1', 230, 50);
     this.brush = this.makeTool('gs-brush', 0.2, 0.85, 245, 'gs-player2', 170, -250);
     this.setTool('none');
 
@@ -359,8 +363,10 @@ export class GeschiedenisScene extends Scene {
     // Then the tools come in and show what they do. They stay for the intro.
     const toolsDelay = 400 + letters.length * TITLE_LETTER_DELAY;
     const { brush: b, trowel: t } = TOOL_SPOTS.title;
-    this.introBrush = this.add.image(b.x, b.y, 'gs-brush').setScale(b.scale).setDepth(DEPTH.card);
-    this.introTrowel = this.add.image(t.x, t.y, 'gs-trowel').setScale(t.scale).setDepth(DEPTH.card);
+    this.introBrush = this.add.image(b.x, b.y, 'gs-brush').setDepth(DEPTH.card);
+    this.introBrush.setScale(b.width / this.introBrush.width);
+    this.introTrowel = this.add.image(t.x, t.y, 'gs-trowel').setDepth(DEPTH.card);
+    this.introTrowel.setScale(t.width / this.introTrowel.width);
     const brush = this.introBrush;
     const trowel = this.introTrowel;
     slideIn(this, brush, 'left', { delay: toolsDelay, sway: false, onComplete: () => this.brushing(brush) });
@@ -394,7 +400,7 @@ export class GeschiedenisScene extends Scene {
   /** Glide a tool to a new spot, then start its movement again. */
   private moveTool(
     tool: GameObjects.Image | undefined,
-    spot: { x: number; y: number; scale: number },
+    spot: { x: number; y: number; width: number },
     then: (tool: GameObjects.Image) => void,
   ) {
     if (!tool) return;
@@ -403,7 +409,7 @@ export class GeschiedenisScene extends Scene {
       targets: tool,
       x: spot.x,
       y: spot.y,
-      scale: spot.scale,
+      scale: spot.width / tool.width,
       angle: 0,
       duration: 900,
       ease: 'Back.InOut',
