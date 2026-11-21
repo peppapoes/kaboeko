@@ -55,7 +55,7 @@ interface Genre {
 const GENRES: Genre[] = [
   { key: 'menu-genre-geschiedenis', file: 'geschiedenis.svg', scene: 'GeschiedenisScene', x: 240, labelY: 293, svgStringX: 206.5, svgLabelY: 462, svgBookY: 763 },
   { key: 'menu-genre-grappig', file: 'grappig.svg', x: 537, labelY: 658, svgStringX: 323.5, svgLabelY: 1054, svgBookY: 1345 },
-  { key: 'menu-genre-mystery', file: 'mystery.svg', x: 847, labelY: 238, svgStringX: 434.5, svgLabelY: 745, svgBookY: 1011 },
+  { key: 'menu-genre-mystery', file: 'mystery.svg', scene: 'DetectiveScene', x: 847, labelY: 238, svgStringX: 434.5, svgLabelY: 745, svgBookY: 1011 },
   { key: 'menu-genre-adventure', file: 'adventure.svg', x: 1230, labelY: 468, svgStringX: 206.5, svgLabelY: 1179, svgBookY: 1441 },
   { key: 'menu-genre-fantasy', file: 'fantasy.svg', x: 1604, labelY: 256, svgStringX: 148.5, svgLabelY: 728, svgBookY: 1025 },
 ];
