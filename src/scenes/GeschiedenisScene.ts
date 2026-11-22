@@ -1,6 +1,7 @@
 import { GameObjects, Input, Math as PMath, Scene, type Types } from 'phaser';
 import { GAME_HEIGHT, GAME_WIDTH, RENDER_SCALE, setupCamera } from '../config';
 import { dropIn, hop, popIn, riseIn, setRestAngle, sinkOut, slideIn, slideOut, swing } from '../puppet';
+import { inputManager } from '../input/InputManager';
 import { PlayerPointers } from '../playerPointers';
 import { loadSvgParts } from '../svgParts';
 import { addPressButtonText } from '../ui';
@@ -236,6 +237,8 @@ export class GeschiedenisScene extends Scene {
     this.cameras.main.fadeIn(600, 0, 0, 0);
     // Input is switched off while leaving the scene; switch it back on.
     this.input.enabled = true;
+    // Controller in 'point' mode: "point at the star" first, to set the center.
+    inputManager.startRecenter(this);
 
     // Reset state: the same scene object is reused when the scene restarts.
     this.state = 'title';

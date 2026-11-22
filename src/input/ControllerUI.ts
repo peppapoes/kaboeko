@@ -36,13 +36,34 @@ const STYLE = `
   .kb-pointer {
     position: fixed; left: 0; top: 0; z-index: 20; pointer-events: none; display: none;
   }
+  .kb-star {
+    /* The star itself is centered on the given point (that is where the kids should point). */
+    position: fixed; left: 0; top: 0; z-index: 15; pointer-events: none; display: none;
+    transform: translate(-50%, -50%);
+    font: 600 28px/1.2 Oswald, sans-serif; color: #fff; text-shadow: 0 2px 6px rgba(0, 0, 0, 0.5);
+  }
+  .kb-star span {
+    position: absolute; bottom: 100%; left: 50%; transform: translateX(-50%);
+    margin-bottom: 0.4em; white-space: nowrap;
+  }
+  .kb-star svg { display: block; animation: kb-star-pulse 1s ease-in-out infinite alternate; }
+  @keyframes kb-star-pulse { from { transform: scale(0.9) rotate(-6deg); } to { transform: scale(1.08) rotate(6deg); } }
 `;
+
+/** A simple five-pointed star (for "point at the star"). */
+const STAR_SVG = `
+  <svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+    <path d="M50 5 L61.8 37.6 L96.6 38.2 L69 59.4 L79 92.6 L50 72.8 L21 92.6 L31 59.4 L3.4 38.2 L38.2 37.6 Z"
+      fill="#FFD23F" stroke="#FFFFFF" stroke-width="6" stroke-linejoin="round"/>
+  </svg>`;
 
 export class ControllerUI {
   private readonly label: HTMLSpanElement;
   private readonly button: HTMLButtonElement;
   private readonly debug: HTMLPreElement;
   private readonly arrow: HTMLImageElement;
+  private readonly star: HTMLDivElement;
+  private readonly starText: HTMLSpanElement;
   private flashTimer?: number;
   private mode: InputMode = 'mouse';
   private split = false;
@@ -76,7 +97,13 @@ export class ControllerUI {
     this.arrow = this.makePointer(ARROW.src);
     this.arrow.style.width = this.arrow.style.height = `${ARROW.size}px`;
 
-    document.body.append(panel, this.debug);
+    this.star = document.createElement('div');
+    this.star.className = 'kb-star';
+    this.starText = document.createElement('span');
+    this.star.innerHTML = STAR_SVG;
+    this.star.prepend(this.starText);
+
+    document.body.append(panel, this.debug, this.star);
     this.setMode('mouse');
   }
 
@@ -118,6 +145,19 @@ export class ControllerUI {
   }
 
   /** The arrow, with its tip at (clientX, clientY). */
+  /** "Point at the star": the star in the middle of the game, with the text above it. */
+  setStar(clientX: number, clientY: number, canvasHeight: number, text: string, visible: boolean) {
+    this.star.style.display = visible ? 'block' : 'none';
+    if (!visible) return;
+    const size = canvasHeight * 0.16;
+    const svg = this.star.querySelector('svg');
+    if (svg) svg.setAttribute('width', `${size}`), svg.setAttribute('height', `${size}`);
+    this.starText.textContent = text;
+    this.star.style.fontSize = `${Math.max(16, canvasHeight * 0.045)}px`;
+    this.star.style.left = `${clientX}px`;
+    this.star.style.top = `${clientY}px`;
+  }
+
   setArrow(clientX: number, clientY: number, visible: boolean) {
     this.place(this.arrow, clientX - ARROW.tipX, clientY - ARROW.tipY, visible);
   }

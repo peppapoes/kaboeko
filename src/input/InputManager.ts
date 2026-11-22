@@ -47,13 +47,14 @@ export interface PlayerState {
   /** Tilt forward/back and left/right, in degrees (raw, before calibration). */
   x: number;
   y: number;
-  /** Rotation; drifts over time, so not used. */
+  /** Rotation (yaw) in degrees from the gyro; drifts slowly, so it is recentered regularly. */
   z: number;
   shake: boolean;
   btn: boolean;
-  /** Tilt that counts as "level" (set by calibration). */
+  /** The center (set by calibration): tilt that counts as "level" / pointing straight ahead. */
   neutralX: number;
   neutralY: number;
+  neutralZ: number;
   /** performance.now() of the last message. */
   lastSeen: number;
 }
@@ -63,7 +64,16 @@ const TILT_PLAYER = 1;
 /** In split mode, the mouse belongs to this player. */
 const MOUSE_PLAYER = 2;
 
+/** One sample while waiting for the controller to be held still (star recentering). */
+interface StillSample {
+  time: number;
+  pitch: number;
+  yaw: number;
+}
+
 const DEBUG_REFRESH_MS = 250;
+/** Point mode: how fast (seconds) the jitter filter settles on the real angle when held still. */
+const JITTER_SETTLE_TIME = 0.4;
 /** A frame that took longer than this means the page was busy (e.g. loading): don't time out then. */
 const STALL_MS = 200;
 
@@ -82,6 +92,14 @@ class InputManager extends Events.EventEmitter {
   private mouse: Point = { x: GAME_WIDTH / 2, y: GAME_HEIGHT / 2 };
   private cursor: Point = { x: GAME_WIDTH / 2, y: GAME_HEIGHT / 2 };
   private velocity: Point = { x: 0, y: 0 };
+
+  /** Point mode: pitch/yaw (degrees from the center) after the jitter filter. */
+  private held = { pitch: 0, yaw: 0 };
+  /** Point mode: smallest and largest pitch/yaw seen since the last reset (key R), for tuning. */
+  private range = emptyRange();
+  /** Star recentering: running while set; samples of the last STILL_TIME ms. */
+  private recentering = false;
+  private stillSamples: StillSample[] = [];
 
   private readonly players = new Map<number, PlayerState>();
   private readonly controllers = new Set<SerialController>();
@@ -155,17 +173,37 @@ class InputManager extends Events.EventEmitter {
     });
   }
 
-  /** Make the current tilt of every connected controller the neutral position. */
+  /** Make the current position of every connected controller the center / neutral position (key C). */
   calibrate() {
     let count = 0;
     for (const state of this.players.values()) {
       if (!this.isFresh(state)) continue;
-      state.neutralX = state.x;
-      state.neutralY = state.y;
+      setCenter(state, state.x, state.y, state.z);
       count++;
     }
-    this.velocity = { x: 0, y: 0 };
+    this.stopRecenter();
+    this.resetMotion();
     this.ui?.flash(count > 0 ? 'calibrated' : 'no controller data');
+  }
+
+  /**
+   * "Point at the star": shows a star in the middle of the screen. As soon as
+   * player 1's controller is held still for a moment, that becomes the center.
+   * Call this at the start of every minigame. Does nothing without a
+   * controller, or in 'rate' mode. The star only shows while the controller
+   * is in use, and goes away when the scene ends.
+   */
+  startRecenter(scene?: Scene) {
+    if (CFG.CONTROL_MODE !== 'point' || this.controllers.size === 0) return;
+    this.recentering = true;
+    this.stillSamples = [];
+    scene?.events.once('shutdown', () => this.stopRecenter());
+  }
+
+  /** Forget the min/max pitch/yaw seen so far (key R; shown in the debug panel). */
+  resetRange() {
+    this.range = emptyRange();
+    this.ui?.flash('range reset');
   }
 
   /** Switch between mouse and controller by hand (key T). */
@@ -326,6 +364,7 @@ class InputManager extends Events.EventEmitter {
     const key = event.key.toLowerCase();
     if (key === 't') this.toggleMode();
     else if (key === 'c') this.calibrate();
+    else if (key === 'r') this.resetRange();
     else if (key === 'd') {
       this.ui?.toggleDebug();
       this.lastDebug = 0;
@@ -404,9 +443,10 @@ class InputManager extends Events.EventEmitter {
       return;
     }
 
-    const { p, x, y, z } = message;
+    const { p, x, y } = message;
     if (typeof p !== 'number' || typeof x !== 'number' || typeof y !== 'number') return;
     if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+    const z = typeof message.z === 'number' && Number.isFinite(message.z) ? message.z : 0;
 
     const now = performance.now();
     this.messageCount++;
@@ -415,13 +455,15 @@ class InputManager extends Events.EventEmitter {
     // First data from this controller, or first after a gap: (re)calibrate.
     const freshStart = !state || now - state.lastSeen > CFG.TIMEOUT_MS;
     if (!state) {
-      state = { player: p, x, y, z: 0, shake: false, btn: false, neutralX: x, neutralY: y, lastSeen: now };
+      state = { player: p, x, y, z, shake: false, btn: false, neutralX: x, neutralY: y, neutralZ: z, lastSeen: now };
       this.players.set(p, state);
     }
     if (freshStart) {
-      state.neutralX = x;
-      state.neutralY = y;
-      if (p === TILT_PLAYER) this.preferMouse = false;
+      setCenter(state, x, y, z);
+      if (p === TILT_PLAYER) {
+        this.preferMouse = false;
+        this.resetMotion();
+      }
     }
 
     const shake = message.shake === 1;
@@ -434,12 +476,61 @@ class InputManager extends Events.EventEmitter {
 
     state.x = x;
     state.y = y;
-    state.z = typeof z === 'number' ? z : 0;
+    state.z = z;
     state.shake = shake;
     state.btn = btn;
     state.lastSeen = now;
 
     if (p === TILT_PLAYER && this.mode === 'mouse' && !this.preferMouse) this.setMode('tilt');
+    if (p === TILT_PLAYER && this.recentering && this.mode === 'tilt') this.checkStill(state, now);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Star recentering ("point at the star")
+  // ---------------------------------------------------------------------------
+
+  /** Recenter as soon as the controller has been (almost) still for STILL_TIME. */
+  private checkStill(state: PlayerState, now: number) {
+    const { STILL_TIME, STILL_TOLERANCE } = CFG.RECENTER;
+    const pitch = state[CFG.POINT.PITCH_AXIS];
+    // Yaw relative to the first sample, unwrapped, so ±180° doesn't count as a big jump.
+    const first = this.stillSamples[0];
+    const yaw = first ? first.yaw + wrapDegrees(state.z - first.yaw) : state.z;
+    this.stillSamples.push({ time: now, pitch, yaw });
+
+    // Moved too much? Start counting again from here.
+    const moved = this.stillSamples.some(
+      (s) => Math.abs(s.pitch - pitch) > STILL_TOLERANCE || Math.abs(s.yaw - yaw) > STILL_TOLERANCE,
+    );
+    if (moved) {
+      this.stillSamples = [{ time: now, pitch, yaw }];
+      return;
+    }
+    if (now - this.stillSamples[0].time < STILL_TIME) return;
+
+    // Held still long enough: the average of this moment is the new center.
+    const avg = (key: 'pitch' | 'yaw') => this.stillSamples.reduce((sum, s) => sum + s[key], 0) / this.stillSamples.length;
+    const centerPitch = avg('pitch');
+    setCenter(
+      state,
+      CFG.POINT.PITCH_AXIS === 'x' ? centerPitch : state.x,
+      CFG.POINT.PITCH_AXIS === 'y' ? centerPitch : state.y,
+      wrapDegrees(avg('yaw')),
+    );
+    this.stopRecenter();
+    this.resetMotion();
+    this.ui?.flash('calibrated');
+  }
+
+  private stopRecenter() {
+    this.recentering = false;
+    this.stillSamples = [];
+  }
+
+  /** After a new center: start the cursor movement fresh (no jump from old filter values). */
+  private resetMotion() {
+    this.velocity = { x: 0, y: 0 };
+    this.held = { pitch: 0, yaw: 0 };
   }
 
   private isFresh(state: PlayerState | undefined): state is PlayerState {
@@ -453,8 +544,9 @@ class InputManager extends Events.EventEmitter {
   private setMode(mode: InputMode) {
     if (mode === this.mode) return;
     this.mode = mode;
-    this.velocity = { x: 0, y: 0 };
+    this.resetMotion();
     if (mode === 'mouse') this.setSplitHover(undefined);
+    // A running "point at the star" waits until the controller is back.
     if (mode === 'tilt' && !this.splitScene) this.sendMouseEvent('mousemove');
 
     this.ui?.setMode(mode);
@@ -476,23 +568,12 @@ class InputManager extends Events.EventEmitter {
     this.updateDebug(now);
   }
 
-  /** Joystick-style: the tilt sets the speed of the cursor. */
+  /** Move the tilt cursor (point or rate mode, see CONTROL_MODE in controllerConfig.ts). */
   private moveCursor(dt: number) {
     const state = this.players.get(TILT_PLAYER);
     if (!state || dt <= 0) return;
 
-    // Sensor y = tilt left/right -> screen x; sensor x = tilt forward/back -> screen y.
-    let tiltX = state.y - state.neutralY;
-    let tiltY = state.x - state.neutralX;
-    if (CFG.SWAP_AXES) [tiltX, tiltY] = [tiltY, tiltX];
-    if (CFG.INVERT_X) tiltX = -tiltX;
-    if (CFG.INVERT_Y) tiltY = -tiltY;
-
-    const follow = CFG.SMOOTHING > 0 ? 1 - Math.exp(-dt / CFG.SMOOTHING) : 1;
-    this.velocity.x += (speedFor(tiltX) - this.velocity.x) * follow;
-    this.velocity.y += (speedFor(tiltY) - this.velocity.y) * follow;
-
-    const next = this.clamp({ x: this.cursor.x + this.velocity.x * dt, y: this.cursor.y + this.velocity.y * dt });
+    const next = this.clamp(CFG.CONTROL_MODE === 'point' ? this.pointTarget(state, dt) : this.rateTarget(state, dt));
     if (Math.abs(next.x - this.cursor.x) < 0.01 && Math.abs(next.y - this.cursor.y) < 0.01) return;
     this.cursor = next;
 
@@ -502,6 +583,69 @@ class InputManager extends Events.EventEmitter {
       this.sendMouseEvent('mousemove');
     }
     this.emit('cursormove', { player: TILT_PLAYER, ...this.cursor });
+  }
+
+  /**
+   * Point mode, like a Wii remote: where the controller points is where the cursor goes.
+   * Up/down from a tilt angle (PITCH_AXIS), left/right from the gyro rotation (z).
+   */
+  private pointTarget(state: PlayerState, dt: number): Point {
+    const P = CFG.POINT;
+    const { pitch, yaw } = this.pointAngles(state);
+
+    // Jitter filter: quick small changes (< DEAD_ZONE) are ignored; bigger ones are followed.
+    // When held still, it slowly settles on the real value, so no offset of DEAD_ZONE stays behind.
+    const settle = 1 - Math.exp(-dt / JITTER_SETTLE_TIME);
+    this.held.pitch = followBeyond(this.held.pitch, pitch, P.DEAD_ZONE);
+    this.held.yaw = followBeyond(this.held.yaw, yaw, P.DEAD_ZONE);
+    this.held.pitch += (pitch - this.held.pitch) * settle;
+    this.held.yaw += (yaw - this.held.yaw) * settle;
+
+    const target = {
+      x: GAME_WIDTH / 2 + (this.held.yaw / P.YAW_RANGE) * (GAME_WIDTH / 2),
+      y: GAME_HEIGHT / 2 - (this.held.pitch / P.PITCH_RANGE) * (GAME_HEIGHT / 2),
+    };
+
+    const follow = P.SMOOTHING > 0 ? 1 - Math.exp(-dt / P.SMOOTHING) : 1;
+    return {
+      x: this.cursor.x + (target.x - this.cursor.x) * follow,
+      y: this.cursor.y + (target.y - this.cursor.y) * follow,
+    };
+  }
+
+  /** Pitch and yaw in degrees from the center (after the INVERT settings). Also tracks min/max for tuning. */
+  private pointAngles(state: PlayerState): { pitch: number; yaw: number } {
+    const { pitch, yaw } = this.relativeAngles(state);
+    this.range.minPitch = Math.min(this.range.minPitch, pitch);
+    this.range.maxPitch = Math.max(this.range.maxPitch, pitch);
+    this.range.minYaw = Math.min(this.range.minYaw, yaw);
+    this.range.maxYaw = Math.max(this.range.maxYaw, yaw);
+    return { pitch, yaw };
+  }
+
+  /** Pitch/yaw in degrees from the center, after the INVERT settings (yaw wrapped to ±180°). */
+  private relativeAngles(state: PlayerState): { pitch: number; yaw: number } {
+    const P = CFG.POINT;
+    const axis = P.PITCH_AXIS;
+    const pitch = state[axis] - (axis === 'x' ? state.neutralX : state.neutralY);
+    const yaw = wrapDegrees(state.z - state.neutralZ);
+    return { pitch: P.INVERT_PITCH ? -pitch : pitch, yaw: P.INVERT_YAW ? -yaw : yaw };
+  }
+
+  /** Rate mode, like a joystick: the tilt sets the speed of the cursor. */
+  private rateTarget(state: PlayerState, dt: number): Point {
+    const R = CFG.RATE;
+    // Sensor y = tilt left/right -> screen x; sensor x = tilt forward/back -> screen y.
+    let tiltX = state.y - state.neutralY;
+    let tiltY = state.x - state.neutralX;
+    if (R.SWAP_AXES) [tiltX, tiltY] = [tiltY, tiltX];
+    if (R.INVERT_X) tiltX = -tiltX;
+    if (R.INVERT_Y) tiltY = -tiltY;
+
+    const follow = R.SMOOTHING > 0 ? 1 - Math.exp(-dt / R.SMOOTHING) : 1;
+    this.velocity.x += (speedFor(tiltX) - this.velocity.x) * follow;
+    this.velocity.y += (speedFor(tiltY) - this.velocity.y) * follow;
+    return { x: this.cursor.x + this.velocity.x * dt, y: this.cursor.y + this.velocity.y * dt };
   }
 
   /**
@@ -516,6 +660,11 @@ class InputManager extends Events.EventEmitter {
     const tip = this.toClient(this.cursor);
     const sceneHasOwnCursor = canvas.style.cursor === 'none';
     ui.setArrow(tip.x, tip.y, this.mode === 'tilt' && !this.splitScene && !sceneHasOwnCursor);
+
+    // "Point at the star", in the middle of the game.
+    const middle = this.toClient({ x: GAME_WIDTH / 2, y: GAME_HEIGHT / 2 });
+    const height = canvas.getBoundingClientRect().height;
+    ui.setStar(middle.x, middle.y, height, CFG.RECENTER.TEXT, this.recentering && this.mode === 'tilt');
   }
 
   /** Is this scene in split mode (player 1 on the controller, player 2 on the mouse)? */
@@ -541,30 +690,72 @@ class InputManager extends Events.EventEmitter {
 
     const lines = [
       `mode      ${this.mode}${this.preferMouse ? ' (mouse chosen with T)' : ''}${this.splitScene ? '   split: P1 controller, P2 mouse' : ''}`,
+      `control   ${CFG.CONTROL_MODE}${this.recentering ? '   waiting: point at the star' : ''}`,
       `ports     ${this.controllers.size}   ${this.messagesPerSecond} msg/s`,
-      `tilt      ${this.cursor.x.toFixed(0)}, ${this.cursor.y.toFixed(0)}   speed ${this.velocity.x.toFixed(0)}, ${this.velocity.y.toFixed(0)}`,
+      `cursor    ${this.cursor.x.toFixed(0)}, ${this.cursor.y.toFixed(0)}` +
+        (CFG.CONTROL_MODE === 'rate' ? `   speed ${this.velocity.x.toFixed(0)}, ${this.velocity.y.toFixed(0)}` : ''),
       `mouse     ${this.mouse.x.toFixed(0)}, ${this.mouse.y.toFixed(0)}`,
     ];
+
+    const p1 = this.players.get(TILT_PLAYER);
+    if (p1 && CFG.CONTROL_MODE === 'point') {
+      const { pitch, yaw } = this.relativeAngles(p1);
+      const r = this.range;
+      const fmt = (v: number) => (Number.isFinite(v) ? v.toFixed(1).padStart(6) : '     -');
+      lines.push(
+        `pitch     ${fmt(pitch)}°  (axis ${CFG.POINT.PITCH_AXIS}, range ±${CFG.POINT.PITCH_RANGE})   min ${fmt(r.minPitch)}  max ${fmt(r.maxPitch)}`,
+        `yaw       ${fmt(yaw)}°  (z, range ±${CFG.POINT.YAW_RANGE})        min ${fmt(r.minYaw)}  max ${fmt(r.maxYaw)}`,
+      );
+    }
+
     if (this.players.size === 0) lines.push('no controller data yet');
     for (const s of [...this.players.values()].sort((a, b) => a.player - b.player)) {
       const age = now - s.lastSeen;
       lines.push(
-        `P${s.player}        x ${s.x.toFixed(1)}  y ${s.y.toFixed(1)}  shake ${s.shake ? 1 : 0}  btn ${s.btn ? 1 : 0}`,
-        `          neutral ${s.neutralX.toFixed(1)}, ${s.neutralY.toFixed(1)}   ` +
+        `P${s.player}        x ${s.x.toFixed(1)}  y ${s.y.toFixed(1)}  z ${s.z.toFixed(1)}  shake ${s.shake ? 1 : 0}  btn ${s.btn ? 1 : 0}`,
+        `          center ${s.neutralX.toFixed(1)}, ${s.neutralY.toFixed(1)}, ${s.neutralZ.toFixed(1)}   ` +
           (age > CFG.TIMEOUT_MS ? 'no data' : `${age.toFixed(0)} ms ago`),
       );
     }
-    lines.push('', 'T mouse/controller  C calibrate  Space P1 button  D close');
+    lines.push('', 'T mouse/controller  C center  R reset min/max  Space P1 button  D close');
     this.ui.setDebugText(lines.join('\n'));
   }
 }
 
-/** Tilt (degrees) -> cursor speed (px/s), with a dead zone and a maximum. */
+/** Rate mode: tilt (degrees) -> cursor speed (px/s), with a dead zone and a maximum. */
 function speedFor(tilt: number): number {
+  const { DEAD_ZONE, MAX_ANGLE, MAX_SPEED } = CFG.RATE;
   const size = Math.abs(tilt);
-  if (size <= CFG.DEAD_ZONE) return 0;
-  const amount = Math.min((size - CFG.DEAD_ZONE) / (CFG.MAX_ANGLE - CFG.DEAD_ZONE), 1);
-  return Math.sign(tilt) * amount * CFG.MAX_SPEED;
+  if (size <= DEAD_ZONE) return 0;
+  const amount = Math.min((size - DEAD_ZONE) / (MAX_ANGLE - DEAD_ZONE), 1);
+  return Math.sign(tilt) * amount * MAX_SPEED;
+}
+
+/** An angle difference in -180..180 degrees (so 179° -> -179° is a step of 2°, not 358°). */
+function wrapDegrees(angle: number): number {
+  return ((((angle + 180) % 360) + 360) % 360) - 180;
+}
+
+/**
+ * Jitter filter: `held` only moves when `value` gets more than `deadZone` away
+ * from it, and then follows at that distance. Small trembling is ignored, real
+ * movement is followed smoothly.
+ */
+function followBeyond(held: number, value: number, deadZone: number): number {
+  if (value > held + deadZone) return value - deadZone;
+  if (value < held - deadZone) return value + deadZone;
+  return held;
+}
+
+/** Set the center / neutral position of a controller. */
+function setCenter(state: PlayerState, x: number, y: number, z: number) {
+  state.neutralX = x;
+  state.neutralY = y;
+  state.neutralZ = z;
+}
+
+function emptyRange() {
+  return { minPitch: Infinity, maxPitch: -Infinity, minYaw: Infinity, maxYaw: -Infinity };
 }
 
 function depthOf(object: GameObjects.GameObject): number {

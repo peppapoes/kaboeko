@@ -1,5 +1,6 @@
 import { GameObjects, Input, Scene, Tweens, type Types } from 'phaser';
 import { GAME_HEIGHT, GAME_WIDTH, RENDER_SCALE, setupCamera } from '../config';
+import { inputManager } from '../input/InputManager';
 import { PlayerPointers } from '../playerPointers';
 import { dropIn, popIn, riseIn, slideIn } from '../puppet';
 import { loadSvgParts } from '../svgParts';
@@ -81,6 +82,8 @@ export class DetectiveScene extends Scene {
     this.cameras.main.fadeIn(600, 0, 0, 0);
     // Input is switched off while leaving the scene; switch it back on.
     this.input.enabled = true;
+    // Controller in 'point' mode: "point at the star" first, to set the center.
+    inputManager.startRecenter(this);
 
     this.state = 'title';
     this.letters = [];
