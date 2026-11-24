@@ -95,6 +95,8 @@ export class DetectiveScene extends Scene {
     // The players' hands as the cursor.
     this.pointers = new PlayerPointers(this);
     this.pointers.show();
+    // Title and explanation: both players' hands (player 1 controller, player 2 mouse).
+    inputManager.setSplit(this);
 
     this.addBackButton();
 

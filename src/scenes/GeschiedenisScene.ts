@@ -290,6 +290,9 @@ export class GeschiedenisScene extends Scene {
     // Hands as the cursor until the game starts (then the trowel and brush take over).
     this.pointers = new PlayerPointers(this);
     this.pointers.show();
+    // Title and explanation: both players' hands (player 1 controller, player 2 mouse).
+    inputManager.setSplit(this);
+    this.events.once('shutdown', () => inputManager.setPointerOwner(undefined));
 
     this.input.on('pointermove', this.onPointerMove, this);
     this.input.on('pointerup', this.pressButton, this);
@@ -493,6 +496,8 @@ export class GeschiedenisScene extends Scene {
 
   private startGame() {
     this.state = 'busy';
+    // The game itself: back to one pointer (the trowel and brush follow it).
+    inputManager.setSplit(null);
 
     const [sign, cardP2, cardP1, brush, trowel] = this.introObjects;
     const press = this.introPress;
@@ -566,6 +571,10 @@ export class GeschiedenisScene extends Scene {
         : this.state === 'clean' || this.state === 'place'
           ? 'p2'
           : undefined;
+
+    // Player 2's turn: the mouse/trackpad moves the brush, even with a controller connected
+    // (that controller is player 1's). Player 1's turn: the controller, if connected.
+    inputManager.setPointerOwner(player === 'p2' ? 2 : undefined);
     if (!player) return;
 
     const now = this.time.now;

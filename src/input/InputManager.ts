@@ -99,6 +99,11 @@ class InputManager extends Events.EventEmitter {
   private splitScene?: Scene;
   /** What player 1's pointer is over in split mode (for hover). */
   private splitHover?: GameObjects.GameObject;
+  /**
+   * One-pointer screens: who controls the pointer right now (e.g. whose turn it is).
+   * MOUSE_PLAYER = the mouse, even when a controller is connected; undefined = the default.
+   */
+  private pointerOwner?: number;
 
   private mouse: Point = { x: GAME_WIDTH / 2, y: GAME_HEIGHT / 2 };
   private cursor: Point = { x: GAME_WIDTH / 2, y: GAME_HEIGHT / 2 };
@@ -236,6 +241,8 @@ class InputManager extends Events.EventEmitter {
   /** Player 1's button (Space for now, later the controller button). */
   pressPlayerButton(player = TILT_PLAYER) {
     if (this.mode !== 'tilt' || player !== TILT_PLAYER) return;
+    // Not this player's turn: the mouse has the pointer.
+    if (!this.splitScene && this.mouseOwnsPointer()) return;
 
     if (this.splitScene) {
       // Press whatever is under player 1's pointer, like a click would.
@@ -260,7 +267,7 @@ class InputManager extends Events.EventEmitter {
     const onGame = event.target === this.canvas;
 
     // Mouse mode, or split mode (mouse = player 2): normal mouse, just report clicks.
-    if (this.mode === 'mouse' || this.splitScene) {
+    if (this.mode === 'mouse' || this.splitScene || this.mouseOwnsPointer()) {
       if (event.type === 'mouseup' && onGame) {
         this.emit('select', { ...this.mouse, player: this.splitScene ? MOUSE_PLAYER : undefined });
       }
@@ -318,14 +325,27 @@ class InputManager extends Events.EventEmitter {
     return undefined;
   }
 
-  /** Press the object under a point: fires its pointerdown/pointerup handlers. */
+  /**
+   * A click at a point, like a real mouse click there: the object under it gets
+   * pointerdown/pointerup, and then the scene itself (unless the object stopped
+   * it with event.stopPropagation(), like a real Phaser click).
+   */
   pressAt(scene: Scene, point: Point): GameObjects.GameObject | undefined {
     const object = this.hitTest(scene, point);
-    if (!object) return undefined;
     const pointer = this.fakePointer(scene, point);
-    const eventData = { cancelled: false, stopPropagation() {} };
-    object.emit('pointerdown', pointer, 0, 0, eventData);
-    object.emit('pointerup', pointer, 0, 0, eventData);
+    const eventData = {
+      cancelled: false,
+      stopPropagation() {
+        this.cancelled = true;
+      },
+    };
+    object?.emit('pointerdown', pointer, 0, 0, eventData);
+    object?.emit('pointerup', pointer, 0, 0, eventData);
+    if (!eventData.cancelled) {
+      const over = object ? [object] : [];
+      scene.input.emit('pointerdown', pointer, over);
+      scene.input.emit('pointerup', pointer, over);
+    }
     return object;
   }
 
@@ -631,7 +651,7 @@ class InputManager extends Events.EventEmitter {
 
     if (this.splitScene) {
       this.setSplitHover(this.hitTest(this.splitScene, this.cursor));
-    } else {
+    } else if (!this.mouseOwnsPointer()) {
       this.sendMouseEvent('mousemove');
     }
     this.emit('cursormove', { player: TILT_PLAYER, ...this.cursor });
@@ -748,7 +768,7 @@ class InputManager extends Events.EventEmitter {
     if (!ui || !canvas) return;
     const tip = this.toClient(this.cursor);
     const sceneHasOwnCursor = canvas.style.cursor === 'none';
-    ui.setArrow(tip.x, tip.y, this.mode === 'tilt' && !this.splitScene && !sceneHasOwnCursor);
+    ui.setArrow(tip.x, tip.y, this.mode === 'tilt' && !this.splitScene && !this.mouseOwnsPointer() && !sceneHasOwnCursor);
 
     // "Point at the star", in the middle of the game.
     const middle = this.toClient({ x: GAME_WIDTH / 2, y: GAME_HEIGHT / 2 });
@@ -757,6 +777,22 @@ class InputManager extends Events.EventEmitter {
   }
 
   /** Is this scene in split mode (player 1 on the controller, player 2 on the mouse)? */
+  /**
+   * On a one-pointer screen: give the pointer to a player, e.g. whose turn it is.
+   * setPointerOwner(2) = the mouse (player 2) controls it, the controller is ignored;
+   * setPointerOwner(1) or undefined = the controller (if connected), as usual.
+   */
+  setPointerOwner(player: number | undefined) {
+    if (player === this.pointerOwner) return;
+    this.pointerOwner = player;
+    // Back to the controller: put the pointer where the controller is.
+    if (this.mode === 'tilt' && !this.splitScene && !this.mouseOwnsPointer()) this.sendMouseEvent('mousemove');
+  }
+
+  private mouseOwnsPointer(): boolean {
+    return this.pointerOwner === MOUSE_PLAYER;
+  }
+
   isSplit(scene: Scene): boolean {
     return this.splitScene === scene;
   }
