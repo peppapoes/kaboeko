@@ -38,6 +38,8 @@ const MIN_DISTANCE_FROM_TROWEL = 350;
 const DIG_RADIUS = 180;
 /** How far (px) the trowel has to move near a find before it is dug up. */
 const DIG_EFFORT = 1400;
+/** Same for the joke finds (sock, poop): much less, about three strokes, so they don't take much energy. */
+const FAKE_DIG_EFFORT = 600;
 /** Size of a find while it is in the sand. */
 const BURIED_SIZE = 260;
 /** Size of a find while it is being cleaned. */
@@ -46,6 +48,8 @@ const CLEAN_SIZE = 780;
 const DUST_PER_FIND = 4;
 /** Size of one dust spot (at cleaning size). */
 const DUST_SIZE = 210;
+/** Dust spots stay at least this far apart (center to center), so they don't clump together. */
+const DUST_MIN_DISTANCE = 190;
 /** How far (px) the brush has to move over a dust spot to remove it. */
 const BRUSH_EFFORT = 700;
 
@@ -732,9 +736,10 @@ export class GeschiedenisScene extends Scene {
     if (PMath.Distance.Between(x, y, container.x, container.y) > DIG_RADIUS) return;
 
     find.effort += moved;
-    container.setAlpha(Math.min(find.effort / DIG_EFFORT, 1));
+    const effort = find.def.kind === 'fake' ? FAKE_DIG_EFFORT : DIG_EFFORT;
+    container.setAlpha(Math.min(find.effort / effort, 1));
 
-    if (find.effort >= DIG_EFFORT) {
+    if (find.effort >= effort) {
       this.buried = undefined;
       this.unearth(find);
     }
@@ -780,15 +785,38 @@ export class GeschiedenisScene extends Scene {
   private addDust(find: Find) {
     const w = find.item.displayWidth * 0.3;
     const h = find.item.displayHeight * 0.3;
+    const placed: PMath.Vector2[] = [];
 
     for (let i = 0; i < DUST_PER_FIND; i++) {
+      const spot = this.spreadOutSpot(w, h, placed);
+      placed.push(spot);
       const image = this.add
-        .image(PMath.Between(-w, w), PMath.Between(-h, h), `gs-dust${PMath.Between(1, 3)}`)
+        .image(spot.x, spot.y, `gs-dust${PMath.Between(1, 3)}`)
         .setAngle(PMath.Between(0, 359));
       image.setScale(DUST_SIZE / image.width);
       find.container.add(image);
       find.dust.push({ image, dirt: BRUSH_EFFORT });
     }
+  }
+
+  /**
+   * A random spot within ±w, ±h that is at least DUST_MIN_DISTANCE from the
+   * other dust spots. If there is no room for that (small find), it takes the
+   * spot furthest away from the others.
+   */
+  private spreadOutSpot(w: number, h: number, others: PMath.Vector2[]): PMath.Vector2 {
+    let best = new PMath.Vector2();
+    let bestDistance = -1;
+    for (let attempt = 0; attempt < 40; attempt++) {
+      const spot = new PMath.Vector2(PMath.Between(-w, w), PMath.Between(-h, h));
+      const nearest = others.reduce((min, o) => Math.min(min, spot.distance(o)), Infinity);
+      if (nearest >= DUST_MIN_DISTANCE) return spot;
+      if (nearest > bestDistance) {
+        best = spot;
+        bestDistance = nearest;
+      }
+    }
+    return best;
   }
 
   private pickUp() {
