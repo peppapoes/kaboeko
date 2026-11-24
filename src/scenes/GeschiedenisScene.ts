@@ -139,6 +139,12 @@ const FINDS: FindDef[] = [
 
 const BOOK: FindDef = { key: 'gs-book', file: 'book.png', kind: 'book' };
 
+/**
+ * Sparkling stars on the spot where the book is buried (the last task).
+ * count = how many, radius = how far from the spot, size = height of a star on screen.
+ */
+const SPARKLES = { count: 5, radius: 150, minSize: 100, maxSize: 160 };
+
 /** "GEFOPT!" label next to a joke find: width on screen, and how long the joke find stays (ms). */
 const GEFOPT = { width: 220, showTime: 1600 };
 
@@ -192,6 +198,8 @@ export class GeschiedenisScene extends Scene {
   private active?: Find;
   /** The quote of the find that was just cleaned. */
   private quote?: GameObjects.Image;
+  /** Stars sparkling where the book is buried. */
+  private sparkles: GameObjects.Image[] = [];
   private signs: Sign[] = [];
   private lastPointer = new PMath.Vector2();
   /** The "pick up" and "place" cards show up by themselves only the first time. */
@@ -237,6 +245,7 @@ export class GeschiedenisScene extends Scene {
       if (find.quote) this.load.svg(quoteKey(find), PATH + find.quote.file, { scale: RENDER_SCALE });
     }
     this.load.svg('gs-gefopt', PATH + 'gefopt.svg', { scale: RENDER_SCALE });
+    this.load.svg('gs-star', PATH + 'star.svg', { scale: RENDER_SCALE });
     // Loaded as text: it is split into one image per letter (see svgParts.ts).
     this.load.text('gs-title', PATH + 'geschiedenis.svg');
     PlayerPointers.preload(this);
@@ -275,6 +284,7 @@ export class GeschiedenisScene extends Scene {
     this.introPress = undefined;
     this.infoButtons = [];
     this.quote = undefined;
+    this.sparkles = [];
     this.card = undefined;
     this.backButton = undefined;
 
@@ -714,6 +724,9 @@ export class GeschiedenisScene extends Scene {
     // Real finds (and the book) are dusty from the start, so the dust shows up
     // while digging. Joke finds get no dust: they don't need cleaning.
     if (def.kind !== 'fake') this.addDust(this.buried);
+
+    // The book is the last task: stars sparkle on its spot, so the players know where to dig.
+    if (def.kind === 'book') this.addSparkles(spot.x, spot.y);
   }
 
   /** Random spot in the dig area, not right under the trowel. */
@@ -747,6 +760,7 @@ export class GeschiedenisScene extends Scene {
 
   private unearth(find: Find) {
     const { container } = find;
+    if (find.def.kind === 'book') this.removeSparkles();
 
     // Joke find: hop, "GEFOPT!", wiggle and disappear. Then the next find goes in the sand.
     if (find.def.kind === 'fake') {
@@ -913,6 +927,48 @@ export class GeschiedenisScene extends Scene {
     this.quote = undefined;
     this.tweens.killTweensOf(quote);
     this.tweens.add({ targets: quote, alpha: 0, scale: quote.scale * 0.8, duration: 250, onComplete: () => quote.destroy() });
+  }
+
+  /** A few stars twinkling around a spot, each on its own rhythm. */
+  private addSparkles(x: number, y: number) {
+    this.removeSparkles();
+    const { count, radius, minSize, maxSize } = SPARKLES;
+    for (let i = 0; i < count; i++) {
+      // Spread around the spot, a bit randomly.
+      const angle = (i / count) * Math.PI * 2 + PMath.FloatBetween(-0.4, 0.4);
+      const distance = radius * PMath.FloatBetween(0.55, 1);
+      const star = this.add
+        .image(x + Math.cos(angle) * distance, y + Math.sin(angle) * distance * 0.8, 'gs-star')
+        .setDepth(DEPTH.buried + 1)
+        .setAngle(PMath.Between(-20, 20))
+        .setAlpha(0);
+      const scale = PMath.Between(minSize, maxSize) / star.height;
+      star.setScale(0);
+
+      // Twinkle: grow and flash, shrink and fade, with a pause; each star out of step.
+      this.tweens.add({
+        targets: star,
+        scale: { from: scale * 0.3, to: scale },
+        alpha: { from: 0.2, to: 1 },
+        angle: star.angle + PMath.Between(-25, 25),
+        duration: PMath.Between(500, 800),
+        delay: i * 180,
+        yoyo: true,
+        repeat: -1,
+        repeatDelay: PMath.Between(150, 500),
+        ease: 'Sine.InOut',
+      });
+      this.sparkles.push(star);
+    }
+  }
+
+  private removeSparkles() {
+    const stars = this.sparkles;
+    this.sparkles = [];
+    for (const star of stars) {
+      this.tweens.killTweensOf(star);
+      this.tweens.add({ targets: star, alpha: 0, scale: 0, duration: 250, onComplete: () => star.destroy() });
+    }
   }
 
   /** "GEFOPT!" next to a joke find, on the side towards the middle of the screen. */
