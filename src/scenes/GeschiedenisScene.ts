@@ -117,18 +117,26 @@ interface FindDef {
   kind: 'real' | 'fake' | 'book';
   /** Index in SIGNS for real finds. */
   sign?: number;
+  /**
+   * Quote shown when the find is clean. x/y = center of the quote, relative to
+   * the center of the find (game pixels); width = size on screen.
+   */
+  quote?: { file: string; x: number; y: number; width: number };
 }
 
 const FINDS: FindDef[] = [
-  { key: 'gs-trex', file: 'trex skull.png', kind: 'real', sign: 0 },
-  { key: 'gs-sarcofaag', file: 'sarcofaag.png', kind: 'real', sign: 1 },
-  { key: 'gs-helmet', file: 'asterix hat.png', kind: 'real', sign: 2 },
-  { key: 'gs-sword', file: 'sword.png', kind: 'real', sign: 3 },
+  { key: 'gs-trex', file: 'trex skull.png', kind: 'real', sign: 0, quote: { file: 'quote-dino.svg', x: -346, y: -211, width: 664 } },
+  { key: 'gs-sarcofaag', file: 'sarcofaag.png', kind: 'real', sign: 1, quote: { file: 'quote-sarcofaag.svg', x: -199, y: 412, width: 654 } },
+  { key: 'gs-helmet', file: 'asterix hat.png', kind: 'real', sign: 2, quote: { file: 'quote-asterix.svg', x: -150, y: 425, width: 690 } },
+  { key: 'gs-sword', file: 'sword.png', kind: 'real', sign: 3, quote: { file: 'quote-koningarthur.svg', x: -346, y: 346, width: 657 } },
   { key: 'gs-sock', file: 'sock.png', kind: 'fake' },
   { key: 'gs-poop', file: 'poop.png', kind: 'fake' },
 ];
 
 const BOOK: FindDef = { key: 'gs-book', file: 'book.png', kind: 'book' };
+
+/** "GEFOPT!" label next to a joke find: width on screen, and how long the joke find stays (ms). */
+const GEFOPT = { width: 220, showTime: 1600 };
 
 /** Draw order (higher = on top). */
 const DEPTH = {
@@ -138,6 +146,7 @@ const DEPTH = {
   backButton: 6,
   overlay: 10,
   active: 11,
+  quote: 12,
   infoButton: 14,
   card: 15,
   tool: 20,
@@ -177,6 +186,8 @@ export class GeschiedenisScene extends Scene {
   /** The one find that is in the sand right now. */
   private buried?: Find;
   private active?: Find;
+  /** The quote of the find that was just cleaned. */
+  private quote?: GameObjects.Image;
   private signs: Sign[] = [];
   private lastPointer = new PMath.Vector2();
   /** The "pick up" and "place" cards show up by themselves only the first time. */
@@ -217,6 +228,11 @@ export class GeschiedenisScene extends Scene {
     image('gs-dust1', 'dust1.png');
     image('gs-dust2', 'dust2.png');
     image('gs-dust3', 'dust3.png');
+    // Quotes (shown when a find is clean) and the "GEFOPT!" label.
+    for (const find of FINDS) {
+      if (find.quote) this.load.svg(quoteKey(find), PATH + find.quote.file, { scale: RENDER_SCALE });
+    }
+    this.load.svg('gs-gefopt', PATH + 'gefopt.svg', { scale: RENDER_SCALE });
     // Loaded as text: it is split into one image per letter (see svgParts.ts).
     this.load.text('gs-title', PATH + 'geschiedenis.svg');
     PlayerPointers.preload(this);
@@ -254,6 +270,7 @@ export class GeschiedenisScene extends Scene {
     this.introTrowel = undefined;
     this.introPress = undefined;
     this.infoButtons = [];
+    this.quote = undefined;
     this.card = undefined;
     this.backButton = undefined;
 
@@ -717,17 +734,20 @@ export class GeschiedenisScene extends Scene {
   private unearth(find: Find) {
     const { container } = find;
 
-    // Joke find: hop, wiggle and disappear. Then the next find goes in the sand.
+    // Joke find: hop, "GEFOPT!", wiggle and disappear. Then the next find goes in the sand.
     if (find.def.kind === 'fake') {
+      const label = this.addGefopt(container);
       hop(this, container, () =>
         this.tweens.add({
           targets: container,
           alpha: 0,
           scale: container.scale * 0.5,
-          delay: 300,
+          delay: GEFOPT.showTime,
           duration: 300,
+          onStart: () => this.tweens.add({ targets: label, alpha: 0, duration: 300 }),
           onComplete: () => {
             container.destroy();
+            label.destroy();
             this.buryNext();
           },
         }),
@@ -826,6 +846,7 @@ export class GeschiedenisScene extends Scene {
         if (find.def.kind === 'book') {
           this.openBook(find);
         } else {
+          this.showQuote(find);
           this.state = 'place';
           if (!this.seenCard.place) {
             this.seenCard.place = true;
@@ -834,6 +855,39 @@ export class GeschiedenisScene extends Scene {
         }
       },
     });
+  }
+
+  /** The quote of a clean find pops up next to it (e.g. "Rare jongens, die Kaboeko lezertjes..."). */
+  private showQuote(find: Find) {
+    const q = find.def.quote;
+    if (!q) return;
+    this.hideQuote();
+    const quote = this.add
+      .image(find.container.x + q.x, find.container.y + q.y, quoteKey(find.def))
+      .setDepth(DEPTH.quote);
+    quote.setScale(q.width / quote.width).setAngle(-2);
+    popIn(this, quote);
+    this.quote = quote;
+  }
+
+  private hideQuote() {
+    const quote = this.quote;
+    if (!quote) return;
+    this.quote = undefined;
+    this.tweens.killTweensOf(quote);
+    this.tweens.add({ targets: quote, alpha: 0, scale: quote.scale * 0.8, duration: 250, onComplete: () => quote.destroy() });
+  }
+
+  /** "GEFOPT!" next to a joke find, on the side towards the middle of the screen. */
+  private addGefopt(container: GameObjects.Container): GameObjects.Image {
+    const side = container.x > GAME_WIDTH / 2 ? -1 : 1;
+    const label = this.add
+      .image(container.x + side * BURIED_SIZE * 0.35, container.y - BURIED_SIZE * 0.3, 'gs-gefopt')
+      .setDepth(DEPTH.buried + 1)
+      .setAngle(-side * 6);
+    label.setScale(GEFOPT.width / label.width);
+    popIn(this, label, { delay: 150 });
+    return label;
   }
 
   // ---------------------------------------------------------------------------
@@ -860,6 +914,7 @@ export class GeschiedenisScene extends Scene {
     this.active = undefined;
     this.state = 'busy';
     this.hideCard();
+    this.hideQuote();
     this.setTool('none');
 
     const sign = this.signs[find.def.sign];
@@ -928,4 +983,8 @@ export class GeschiedenisScene extends Scene {
     this.pointers.show();
     this.backButton?.setDepth(DEPTH.active + 2);
   }
+}
+
+function quoteKey(def: FindDef): string {
+  return `${def.key}-quote`;
 }

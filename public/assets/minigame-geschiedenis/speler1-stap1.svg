@@ -41,7 +41,7 @@
 <feBlend mode="normal" in2="BackgroundImageFix" result="effect1_dropShadow_212_4571"/>
 <feBlend mode="normal" in="SourceGraphic" in2="effect1_dropShadow_212_4571" result="shape"/>
 <feTurbulence type="fractalNoise" baseFrequency="0.040322583168745041 0.040322583168745041" numOctaves="3" seed="3205" />
-<feDisplacementMap in="shape" scale="8" xChannelSelector="R" yChannelSelector="G" result="displacedImage" width="100%" height="100%" />
+<feDisplacementMap in="shape" scale="8" xChannelSelector="R" yChannelSelector="G" result="displacedImage" />
 <feMerge result="effect2_texture_212_4571">
 <feMergeNode in="displacedImage"/>
 </feMerge>
