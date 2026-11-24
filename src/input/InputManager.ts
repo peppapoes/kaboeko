@@ -27,7 +27,8 @@ import { SerialController, type ControllerMessage } from './SerialController';
  *   inputManager.getMode()          -> 'mouse' | 'tilt'
  *   inputManager.on('select', ({ x, y, player }) => ...)   a click
  *   inputManager.on('shake', ({ player }) => ...)          controller shaken (start of a shake)
- *   inputManager.on('button', ({ player }) => ...)         controller button pressed
+ *   inputManager.on('button', ({ player }) => ...)         controller button pressed (MPU btn, Nunchuk Z)
+ *   inputManager.on('back', ({ player }) => ...)           Nunchuk C button pressed
  *   inputManager.on('cursormove', ({ player, x, y }) => ...)  player 1's tilt cursor moved
  *   inputManager.on('modechange', (mode) => ...)
  *
@@ -42,8 +43,18 @@ export interface Point {
 }
 
 /** Latest data from one controller. */
+/** Which controller a player uses: detected from the messages ("jx" = Nunchuk). */
+export type ControllerType = 'mpu' | 'nunchuk';
+
 export interface PlayerState {
   player: number;
+  type: ControllerType;
+  /** Nunchuk joystick, -100..100 (right / up positive); 0 for the MPU controller. */
+  jx: number;
+  jy: number;
+  /** Nunchuk C and Z buttons. */
+  bc: boolean;
+  bz: boolean;
   /** Tilt forward/back and left/right, in degrees (raw, before calibration). */
   x: number;
   y: number;
@@ -95,6 +106,8 @@ class InputManager extends Events.EventEmitter {
 
   /** Point mode: pitch/yaw (degrees from the center) after the jitter filter. */
   private held = { pitch: 0, yaw: 0 };
+  /** Nunchuk tilt: smoothing per direction. */
+  private tiltFilter = { x: new OneEuroFilter(), y: new OneEuroFilter() };
   /** Point mode: smallest and largest pitch/yaw seen since the last reset (key R), for tuning. */
   private range = emptyRange();
   /** Star recentering: running while set; samples of the last STILL_TIME ms. */
@@ -195,6 +208,7 @@ class InputManager extends Events.EventEmitter {
    */
   startRecenter(scene?: Scene) {
     if (CFG.CONTROL_MODE !== 'point' || this.controllers.size === 0) return;
+    if (this.players.get(TILT_PLAYER)?.type === 'nunchuk') return;
     this.recentering = true;
     this.stillSamples = [];
     scene?.events.once('shutdown', () => this.stopRecenter());
@@ -447,6 +461,8 @@ class InputManager extends Events.EventEmitter {
     if (typeof p !== 'number' || typeof x !== 'number' || typeof y !== 'number') return;
     if (!Number.isFinite(x) || !Number.isFinite(y)) return;
     const z = typeof message.z === 'number' && Number.isFinite(message.z) ? message.z : 0;
+    const type: ControllerType = 'jx' in message ? 'nunchuk' : 'mpu';
+    const num = (value: unknown) => (typeof value === 'number' && Number.isFinite(value) ? value : 0);
 
     const now = performance.now();
     this.messageCount++;
@@ -455,25 +471,52 @@ class InputManager extends Events.EventEmitter {
     // First data from this controller, or first after a gap: (re)calibrate.
     const freshStart = !state || now - state.lastSeen > CFG.TIMEOUT_MS;
     if (!state) {
-      state = { player: p, x, y, z, shake: false, btn: false, neutralX: x, neutralY: y, neutralZ: z, lastSeen: now };
+      state = {
+        player: p, type, jx: 0, jy: 0, bc: false, bz: false,
+        x, y, z, shake: false, btn: false, neutralX: x, neutralY: y, neutralZ: z, lastSeen: now,
+      };
       this.players.set(p, state);
+    }
+    if (state.type !== type) {
+      state.type = type;
+      if (p === TILT_PLAYER) {
+        this.resetMotion();
+        this.ui?.setControllerType(type);
+        // The Nunchuk can't "point at the star" (no gyro).
+        if (type === 'nunchuk') this.stopRecenter();
+      }
     }
     if (freshStart) {
       setCenter(state, x, y, z);
       if (p === TILT_PLAYER) {
         this.preferMouse = false;
         this.resetMotion();
+        this.ui?.setControllerType(type);
       }
     }
 
     const shake = message.shake === 1;
     const btn = message.btn === 1;
+    // Nunchuk buttons: "bc"/"bz", or "c"/"z" in older sketches.
+    const bc = message.bc === 1 || message.c === 1;
+    const bz = message.bz === 1 || message.z === 1;
     if (shake && !state.shake) this.emit('shake', { player: p });
-    if (btn && !state.btn) {
+    // The "click": the MPU's button, or the Nunchuk's Z (its btn is a copy of Z, so it is not used).
+    const zDown = type === 'nunchuk' && bz && !state.bz;
+    const click = type === 'nunchuk' ? zDown : btn && !state.btn;
+    // Short "Z" in the label, so you can see that the game receives the button.
+    if (zDown) this.ui?.flash('Z');
+    // C only gives a separate "back" signal (not used yet).
+    if (type === 'nunchuk' && bc && !state.bc) this.emit('back', { player: p });
+    if (click) {
       this.emit('button', { player: p });
       this.pressPlayerButton(p);
     }
 
+    state.jx = num(message.jx);
+    state.jy = num(message.jy);
+    state.bc = bc;
+    state.bz = bz;
     state.x = x;
     state.y = y;
     state.z = z;
@@ -482,7 +525,7 @@ class InputManager extends Events.EventEmitter {
     state.lastSeen = now;
 
     if (p === TILT_PLAYER && this.mode === 'mouse' && !this.preferMouse) this.setMode('tilt');
-    if (p === TILT_PLAYER && this.recentering && this.mode === 'tilt') this.checkStill(state, now);
+    if (p === TILT_PLAYER && this.recentering && this.mode === 'tilt' && type === 'mpu') this.checkStill(state, now);
   }
 
   // ---------------------------------------------------------------------------
@@ -531,6 +574,7 @@ class InputManager extends Events.EventEmitter {
   private resetMotion() {
     this.velocity = { x: 0, y: 0 };
     this.held = { pitch: 0, yaw: 0 };
+    this.tiltFilter = { x: new OneEuroFilter(), y: new OneEuroFilter() };
   }
 
   private isFresh(state: PlayerState | undefined): state is PlayerState {
@@ -573,7 +617,15 @@ class InputManager extends Events.EventEmitter {
     const state = this.players.get(TILT_PLAYER);
     if (!state || dt <= 0) return;
 
-    const next = this.clamp(CFG.CONTROL_MODE === 'point' ? this.pointTarget(state, dt) : this.rateTarget(state, dt));
+    const target =
+      state.type === 'nunchuk'
+        ? CFG.NUNCHUK_CONTROL === 'tilt'
+          ? this.nunchukTiltTarget(state, dt)
+          : this.joystickTarget(state, dt)
+        : CFG.CONTROL_MODE === 'point'
+          ? this.pointTarget(state, dt)
+          : this.rateTarget(state, dt);
+    const next = this.clamp(target);
     if (Math.abs(next.x - this.cursor.x) < 0.01 && Math.abs(next.y - this.cursor.y) < 0.01) return;
     this.cursor = next;
 
@@ -632,6 +684,43 @@ class InputManager extends Events.EventEmitter {
     return { pitch: P.INVERT_PITCH ? -pitch : pitch, yaw: P.INVERT_YAW ? -yaw : yaw };
   }
 
+  /**
+   * Nunchuk tilt: the cursor follows the tilt (absolute, like pointing).
+   * Left/right from y (tilt left/right), up/down from x (tilt forward/back),
+   * relative to the middle (set when the Nunchuk connects, and with key C).
+   */
+  private nunchukTiltTarget(state: PlayerState, dt: number): Point {
+    const T = CFG.NUNCHUK_TILT;
+    let { leftRight, forwardBack } = tiltFromCenter(state);
+    if (T.INVERT_X) leftRight = -leftRight;
+    if (T.INVERT_Y) forwardBack = -forwardBack;
+
+    // 1-euro filter: calm when still, quick when moving.
+    const lr = this.tiltFilter.x.filter(leftRight, dt, T.MIN_CUTOFF, T.BETA);
+    const fb = this.tiltFilter.y.filter(forwardBack, dt, T.MIN_CUTOFF, T.BETA);
+
+    return {
+      x: GAME_WIDTH / 2 + (lr / T.RANGE_X) * (GAME_WIDTH / 2),
+      y: GAME_HEIGHT / 2 - (fb / T.RANGE_Y) * (GAME_HEIGHT / 2),
+    };
+  }
+
+  /** Nunchuk: the joystick sets the speed of the cursor (rate control). */
+  private joystickTarget(state: PlayerState, dt: number): Point {
+    const speed = (value: number) => {
+      const size = Math.abs(value);
+      if (size <= CFG.NUNCHUK_DEAD_ZONE) return 0;
+      const amount = Math.min((size - CFG.NUNCHUK_DEAD_ZONE) / (100 - CFG.NUNCHUK_DEAD_ZONE), 1);
+      return Math.sign(value) * amount * CFG.NUNCHUK_MAX_SPEED;
+    };
+    // Joystick up is positive, screen y goes down.
+    const vy = -speed(state.jy) * (CFG.NUNCHUK_INVERT_Y ? -1 : 1);
+    const follow = CFG.NUNCHUK_SMOOTHING > 0 ? 1 - Math.exp(-dt / CFG.NUNCHUK_SMOOTHING) : 1;
+    this.velocity.x += (speed(state.jx) - this.velocity.x) * follow;
+    this.velocity.y += (vy - this.velocity.y) * follow;
+    return { x: this.cursor.x + this.velocity.x * dt, y: this.cursor.y + this.velocity.y * dt };
+  }
+
   /** Rate mode, like a joystick: the tilt sets the speed of the cursor. */
   private rateTarget(state: PlayerState, dt: number): Point {
     const R = CFG.RATE;
@@ -688,17 +777,19 @@ class InputManager extends Events.EventEmitter {
     if (!this.ui?.debugVisible || now - this.lastDebug < DEBUG_REFRESH_MS) return;
     this.lastDebug = now;
 
+    const p1 = this.players.get(TILT_PLAYER);
+    const nunchuk = p1?.type === 'nunchuk';
     const lines = [
       `mode      ${this.mode}${this.preferMouse ? ' (mouse chosen with T)' : ''}${this.splitScene ? '   split: P1 controller, P2 mouse' : ''}`,
-      `control   ${CFG.CONTROL_MODE}${this.recentering ? '   waiting: point at the star' : ''}`,
+      `control   ${p1 ? (nunchuk ? `Nunchuk (${CFG.NUNCHUK_CONTROL})` : `MPU-6050 (${CFG.CONTROL_MODE})`) : CFG.CONTROL_MODE}` +
+        (this.recentering ? '   waiting: point at the star' : ''),
       `ports     ${this.controllers.size}   ${this.messagesPerSecond} msg/s`,
       `cursor    ${this.cursor.x.toFixed(0)}, ${this.cursor.y.toFixed(0)}` +
-        (CFG.CONTROL_MODE === 'rate' ? `   speed ${this.velocity.x.toFixed(0)}, ${this.velocity.y.toFixed(0)}` : ''),
+        (nunchuk || CFG.CONTROL_MODE === 'rate' ? `   speed ${this.velocity.x.toFixed(0)}, ${this.velocity.y.toFixed(0)}` : ''),
       `mouse     ${this.mouse.x.toFixed(0)}, ${this.mouse.y.toFixed(0)}`,
     ];
 
-    const p1 = this.players.get(TILT_PLAYER);
-    if (p1 && CFG.CONTROL_MODE === 'point') {
+    if (p1 && !nunchuk && CFG.CONTROL_MODE === 'point') {
       const { pitch, yaw } = this.relativeAngles(p1);
       const r = this.range;
       const fmt = (v: number) => (Number.isFinite(v) ? v.toFixed(1).padStart(6) : '     -');
@@ -711,11 +802,19 @@ class InputManager extends Events.EventEmitter {
     if (this.players.size === 0) lines.push('no controller data yet');
     for (const s of [...this.players.values()].sort((a, b) => a.player - b.player)) {
       const age = now - s.lastSeen;
-      lines.push(
-        `P${s.player}        x ${s.x.toFixed(1)}  y ${s.y.toFixed(1)}  z ${s.z.toFixed(1)}  shake ${s.shake ? 1 : 0}  btn ${s.btn ? 1 : 0}`,
-        `          center ${s.neutralX.toFixed(1)}, ${s.neutralY.toFixed(1)}, ${s.neutralZ.toFixed(1)}   ` +
-          (age > CFG.TIMEOUT_MS ? 'no data' : `${age.toFixed(0)} ms ago`),
-      );
+      const seen = age > CFG.TIMEOUT_MS ? 'no data' : `${age.toFixed(0)} ms ago`;
+      if (s.type === 'nunchuk') {
+        lines.push(
+          `P${s.player} nunchuk  joy ${String(s.jx).padStart(4)}, ${String(s.jy).padStart(4)}  C ${s.bc ? 1 : 0}  Z ${s.bz ? 1 : 0}  shake ${s.shake ? 1 : 0}`,
+          `          tilt x ${s.x.toFixed(1)}  y ${s.y.toFixed(1)}   from middle: ` +
+            `left/right ${tiltFromCenter(s).leftRight.toFixed(1)}  forward/back ${tiltFromCenter(s).forwardBack.toFixed(1)}   ${seen}`,
+        );
+      } else {
+        lines.push(
+          `P${s.player} mpu      x ${s.x.toFixed(1)}  y ${s.y.toFixed(1)}  z ${s.z.toFixed(1)}  shake ${s.shake ? 1 : 0}  btn ${s.btn ? 1 : 0}`,
+          `          center ${s.neutralX.toFixed(1)}, ${s.neutralY.toFixed(1)}, ${s.neutralZ.toFixed(1)}   ${seen}`,
+        );
+      }
     }
     lines.push('', 'T mouse/controller  C center  R reset min/max  Space P1 button  D close');
     this.ui.setDebugText(lines.join('\n'));
@@ -745,6 +844,68 @@ function followBeyond(held: number, value: number, deadZone: number): number {
   if (value > held + deadZone) return value - deadZone;
   if (value < held - deadZone) return value + deadZone;
   return held;
+}
+
+/**
+ * Nunchuk: how far (degrees) it is tilted left/right and forward/back from the
+ * center (set with C). Computed from the direction of gravity, so it is
+ * accurate however the Nunchuk is held (the raw roll angle is not, when the
+ * Nunchuk is held on its side), and the two directions don't mix.
+ */
+function tiltFromCenter(state: PlayerState): { leftRight: number; forwardBack: number } {
+  const g = gravity(state.x, state.y);
+  const g0 = gravity(state.neutralX, state.neutralY);
+  // Axis "tilt left/right" = turning around the Nunchuk's forward axis (0, 1, 0).
+  const lrAxis = normalize(cross([0, 1, 0], g0));
+  if (!lrAxis) {
+    // Held with the front straight up or down: fall back to the plain angles.
+    return { leftRight: wrapDegrees(state.y - state.neutralY), forwardBack: wrapDegrees(state.x - state.neutralX) };
+  }
+  const fbAxis = cross(g0, lrAxis);
+  const deg = (v: number) => (Math.asin(Math.max(-1, Math.min(1, v))) * 180) / Math.PI;
+  return { leftRight: deg(dot(g, lrAxis)), forwardBack: deg(dot(g, fbAxis)) };
+}
+
+type Vec3 = [number, number, number];
+
+/** Direction of gravity from the Nunchuk sketch's angles (x = pitch, y = roll, degrees). */
+function gravity(pitchDeg: number, rollDeg: number): Vec3 {
+  const p = (pitchDeg * Math.PI) / 180;
+  const r = (rollDeg * Math.PI) / 180;
+  return [Math.cos(p) * Math.sin(r), Math.sin(p), Math.cos(p) * Math.cos(r)];
+}
+
+function cross(a: Vec3, b: Vec3): Vec3 {
+  return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+}
+
+function dot(a: Vec3, b: Vec3): number {
+  return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+}
+
+function normalize(v: Vec3): Vec3 | undefined {
+  const length = Math.hypot(v[0], v[1], v[2]);
+  return length < 0.1 ? undefined : [v[0] / length, v[1] / length, v[2] / length];
+}
+
+/**
+ * "1-euro filter" (Casiez et al.): smooths a shaky signal strongly when it
+ * changes slowly, and lightly when it changes fast, so it is both calm and quick.
+ */
+class OneEuroFilter {
+  private value?: number;
+  private speed = 0;
+
+  filter(input: number, dt: number, minCutoff: number, beta: number, speedCutoff = 1): number {
+    if (this.value === undefined || dt <= 0) {
+      this.value = input;
+      return input;
+    }
+    const alpha = (cutoff: number) => 1 / (1 + 1 / (2 * Math.PI * cutoff * dt));
+    this.speed += alpha(speedCutoff) * ((input - this.value) / dt - this.speed);
+    this.value += alpha(minCutoff + beta * Math.abs(this.speed)) * (input - this.value);
+    return this.value;
+  }
 }
 
 /** Set the center / neutral position of a controller. */
