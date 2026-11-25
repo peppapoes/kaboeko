@@ -24,6 +24,8 @@ export interface MoveOptions {
    * stick/post ends just at the edge of the screen, so the end never shows.
    */
   overshoot?: boolean;
+  /** Calm: a small wobble on arrival and a very light sway (for cards that must stay readable). */
+  gentle?: boolean;
   onComplete?: () => void;
 }
 
@@ -75,13 +77,13 @@ function wobbleIn(scene: Scene, target: Puppet, delay: number, duration: number,
   const base = restAngle(target);
   scene.tweens.add({
     targets: target,
-    angle: { from: base + randomSide() * 7, to: base },
+    angle: { from: base + randomSide() * (opts.gentle ? 3 : 7), to: base },
     delay,
     duration: duration * 1.8,
     ease: 'Elastic.Out',
     easeParams: [1, 0.35],
     onComplete: () => {
-      if (opts.sway !== false) sway(scene, target);
+      if (opts.sway !== false) sway(scene, target, opts.gentle ? 0.4 : 1.2);
       opts.onComplete?.();
     },
   });

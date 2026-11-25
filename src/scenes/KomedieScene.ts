@@ -203,7 +203,7 @@ export class KomedieScene extends Scene {
         .setOrigin(0.5, 1)
         .setScale(card.scale / RENDER_SCALE)
         .setDepth(DEPTH.content);
-      riseIn(this, image, { delay: 550 + i * 150 });
+      riseIn(this, image, { delay: 550 + i * 150, gentle: true });
     }
 
     void addPressButtonText(this, GAME_WIDTH / 2, PRESS_TEXT_Y, { depth: DEPTH.content, delay: 900 });

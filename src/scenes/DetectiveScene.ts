@@ -4,6 +4,7 @@ import { inputManager } from '../input/InputManager';
 import { PlayerPointers } from '../playerPointers';
 import { dropIn, popIn, riseIn, sinkOut, slideIn, sway, swing } from '../puppet';
 import { loadSvgParts } from '../svgParts';
+import { addStartButton, preloadStartButton } from '../ui';
 
 /*
  * Minigame "detectieve".
@@ -35,9 +36,8 @@ const PATH = 'assets/minigame-detectieve/';
 
 /** Center of the letters of "DETECTIEVE" inside detectieve.svg (in SVG pixels). */
 const TITLE_SVG_CENTER = { x: 933, y: 370 };
-/** Big title on the title screen, small title at the top of the intro. */
+/** The title on the title screen (in the intro it goes away). */
 const TITLE_BIG = { x: 965, y: 588, scale: 0.89 };
-const TITLE_SMALL = { x: 966, y: 226, scale: 0.426 };
 /** Time between two letters falling in. */
 const TITLE_LETTER_DELAY = 70;
 /** The title goes on to the intro by itself after this many ms (a button press goes on sooner). */
@@ -46,16 +46,20 @@ const TITLE_TIME = 4500;
 /** Where the net (player 2) and the magnifying glass (player 1) are; width = size on screen. */
 const TOOL_SPOTS = {
   title: { net: { x: 234, y: 406, width: 370 }, glass: { x: 1444, y: 801, width: 268 } },
-  intro: { net: { x: 1456, y: 405, width: 370 }, glass: { x: 660, y: 740, width: 268 } },
+  // Next to their player's card: glass (player 1) left, net (player 2) right.
+  intro: { net: { x: 1205, y: 640, width: 420 }, glass: { x: 640, y: 655, width: 268 } },
 };
 
-/** Cards and sign stand with the end of their stick/post below the screen. */
+/** Cards stand with the end of their stick below the screen. */
 const BOTTOM_Y = GAME_HEIGHT + 40;
 const CARDS = {
-  p1: { key: 'dt-card-p1', file: 'speler1-stap1.svg', x: 336, scale: 0.868 },
-  p2: { key: 'dt-card-p2', file: 'speler2-stap1.svg', x: 1579, scale: 0.879 },
+  p1: { key: 'dt-card-p1', file: 'speler1-stap1.svg', x: 395, scale: 0.885 },
+  p2: { key: 'dt-card-p2', file: 'speler2-stap1.svg', x: 1525, scale: 0.885 },
 };
-const SIGN = { x: GAME_WIDTH / 2, scale: 0.887 };
+/** The "Help!" sign hangs from the top (its post goes up off the screen). */
+const SIGN = { key: 'dt-sign-help', file: 'sign-help.svg', x: GAME_WIDTH / 2, y: -20, scale: 0.87 };
+/** "Druk op een knop om te starten", at the bottom between the cards. */
+const START_BUTTON = { x: GAME_WIDTH / 2, y: 1140, width: 755 };
 
 /** Draw order (higher = on top). */
 // The net and magnifying glass are in front of the cards.
@@ -143,6 +147,9 @@ const WALK = {
   front: { y: 1270, height: 680 },
   back: { y: 1150, height: 620 },
   time: 8000,
+  /** Now and then one hurries past, to make it extra hard: chance (0..1) and its time (ms). */
+  fastChance: 0.25,
+  fastTime: 2600,
   peekTime: 1800,
   pause: 1300,
 };
@@ -284,7 +291,8 @@ export class DetectiveScene extends Scene {
     this.load.image('dt-background', PATH + 'background.png');
     this.load.svg('dt-net', PATH + 'net.svg', { scale: RENDER_SCALE });
     this.load.svg('dt-glass', PATH + 'vergrootglas.svg', { scale: RENDER_SCALE });
-    this.load.svg('dt-sign', PATH + 'sign.svg', { scale: RENDER_SCALE });
+    this.load.svg(SIGN.key, PATH + SIGN.file, { scale: RENDER_SCALE });
+    preloadStartButton(this);
     Object.values(CARDS).forEach((card) => this.load.svg(card.key, PATH + card.file, { scale: RENDER_SCALE }));
     // Loaded as text: split into one image per letter (see svgParts.ts).
     this.load.text('dt-title', PATH + 'detectieve.svg');
@@ -446,38 +454,31 @@ export class DetectiveScene extends Scene {
   private showIntro() {
     this.state = 'busy';
 
-    // The title shrinks and moves to the top, letter by letter.
-    this.letters.forEach(({ image, svgX, svgY }, i) => {
-      this.tweens.add({
-        targets: image,
-        x: this.titleX(svgX, TITLE_SMALL),
-        y: this.titleY(svgY, TITLE_SMALL),
-        scale: TITLE_SMALL.scale / RENDER_SCALE,
-        delay: i * 30,
-        duration: 900,
-        ease: 'Back.InOut',
-      });
-    });
+    // The title goes down, letter by letter.
+    const letters = this.letters;
+    this.letters = [];
+    letters.forEach(({ image }, i) => sinkOut(this, image, { delay: i * 30, onComplete: () => image.destroy() }));
 
     // The tools don't leave: they move to their player's card.
     this.moveTool(this.net, TOOL_SPOTS.intro.net, (net) => this.netSwish(net));
     this.moveTool(this.glass, TOOL_SPOTS.intro.glass, (glass) => this.glassCircle(glass));
 
-    // The cards come up on their sticks; the sign comes up once and stands still.
+    // The "Help!" sign comes down from the top and hangs still; the cards come up on their sticks.
     const sign = this.add
-      .image(SIGN.x, BOTTOM_Y, 'dt-sign')
-      .setOrigin(0.5, 1)
+      .image(SIGN.x, SIGN.y, SIGN.key)
+      .setOrigin(0.5, 0)
       .setScale(SIGN.scale / RENDER_SCALE)
       .setDepth(DEPTH.content);
-    riseIn(this, sign, { delay: 300, sway: false });
+    dropIn(this, sign, { delay: 300, sway: false });
     this.introObjects.push(sign);
+    this.introObjects.push(addStartButton(this, START_BUTTON.x, START_BUTTON.y, { width: START_BUTTON.width, depth: DEPTH.content, delay: 1000 }));
     for (const [i, card] of [CARDS.p1, CARDS.p2].entries()) {
       const image = this.add
         .image(card.x, BOTTOM_Y, card.key)
         .setOrigin(0.5, 1)
         .setScale(card.scale / RENDER_SCALE)
         .setDepth(DEPTH.content);
-      riseIn(this, image, { delay: 550 + i * 150 });
+      riseIn(this, image, { delay: 550 + i * 150, gentle: true });
       this.introObjects.push(image);
     }
 
@@ -720,7 +721,7 @@ export class DetectiveScene extends Scene {
       .setOrigin(0.5, 1)
       .setScale(def.scale / RENDER_SCALE)
       .setDepth(DEPTH.notebook - 1);
-    riseIn(this, card);
+    riseIn(this, card, { gentle: true });
     this.searchCard[player] = card;
     this.time.delayedCall(SEARCH_CARD_TIME, () => this.hideSearchCard(player));
   }
@@ -796,14 +797,16 @@ export class DetectiveScene extends Scene {
     image.setFlipX(!fromLeft);
     this.setBehind(suspect, kind !== 'front');
 
+    // Sometimes he hurries past (faster steps too).
+    const fast = Math.random() < WALK.fastChance;
     // A little bounce in each step.
-    this.tweens.add({ targets: image, angle: { from: -3, to: 3 }, duration: 260, yoyo: true, repeat: -1, ease: 'Sine.InOut' });
+    this.tweens.add({ targets: image, angle: { from: -3, to: 3 }, duration: fast ? 120 : 260, yoyo: true, repeat: -1, ease: 'Sine.InOut' });
     this.tweens.add({
       targets: image,
       x: fromLeft ? GAME_WIDTH + margin : -margin,
       y: to.y,
       scale: scaleFor(to.height),
-      duration: WALK.time,
+      duration: fast ? WALK.fastTime : WALK.time,
       ease: 'Linear',
       onUpdate: (tween) => {
         // Diagonal: comes out from behind the bookcases halfway.

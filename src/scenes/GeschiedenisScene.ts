@@ -4,7 +4,7 @@ import { dropIn, hop, popIn, riseIn, setRestAngle, sinkOut, slideIn, slideOut, s
 import { inputManager } from '../input/InputManager';
 import { PlayerPointers } from '../playerPointers';
 import { loadSvgParts } from '../svgParts';
-import { addPressButtonText } from '../ui';
+import { addStartButton, preloadStartButton } from '../ui';
 
 /*
  * Minigame "geschiedenis".
@@ -67,7 +67,7 @@ const TITLE_TIME = 4500;
 const TOOL_SPOTS = {
   title: { brush: { x: 581, y: 419, width: 194 }, trowel: { x: 1459, y: 830, width: 204 } },
   // Each tool next to its player's card: trowel (player 1) left, brush (player 2) right.
-  intro: { brush: { x: 1206, y: 521, width: 256 }, trowel: { x: 687, y: 588, width: 243 } },
+  intro: { brush: { x: 1245, y: 670, width: 256 }, trowel: { x: 640, y: 650, width: 243 } },
 };
 
 // Signs at the top of the screen (they hang from their post).
@@ -90,17 +90,20 @@ const SIGNS = [
 const CARDS = {
   // Player 1 is on the left, player 2 on the right.
   // lean = how much the drawing itself already leans, in degrees (+ = to the right).
-  introP1: { key: 'gs-card-p1-dig', file: 'speler1-stap1.svg', x: 395, scale: 0.9, lean: 5.5 },
-  introP2: { key: 'gs-card-p2-brush', file: 'speler2-stap1.svg', x: 1480, scale: 0.89, lean: -1.8 },
-  pickUp: { key: 'gs-card-p1-pickup', file: 'speler1-stap2.svg', x: 673, scale: 0.88, lean: -2.7 },
-  place: { key: 'gs-card-p2-place', file: 'speler2-stap2.svg', x: 1624, scale: 0.88, lean: 5.4 },
+  // The intro cards stand a bit higher (bottomY), like in the design; they are drawn already leaning.
+  introP1: { key: 'gs-card-p1-dig', file: 'speler1-stap1.svg', x: 395, scale: 0.885, lean: -5, bottomY: GAME_HEIGHT + 30 },
+  introP2: { key: 'gs-card-p2-brush', file: 'speler2-stap1.svg', x: 1525, scale: 0.885, lean: 5, bottomY: GAME_HEIGHT + 30 },
+  pickUp: { key: 'gs-card-p1-pickup', file: 'speler1-stap2.svg', x: 673, scale: 0.88, lean: -2.7, bottomY: undefined },
+  place: { key: 'gs-card-p2-place', file: 'speler2-stap2.svg', x: 1624, scale: 0.88, lean: 5.4, bottomY: undefined },
 };
+/** The intro sign hangs from the top (its post goes up off the screen). */
+const INTRO_SIGN = { key: 'gs-sign-archeoloog', file: 'sign-archeoloog.svg', x: GAME_WIDTH / 2, y: -20, scale: 0.87 };
+/** "Druk op een knop om te starten", at the bottom between the cards. */
+const START_BUTTON = { x: GAME_WIDTH / 2, y: 1140, width: 755 };
 /** How far (degrees) the cards lean towards the outside of the screen. */
 const CARD_LEAN = 5;
 /** Cards and the intro sign stand with the end of their stick well below the screen. */
 const CARD_BOTTOM_Y = GAME_HEIGHT + 110;
-/** "druk op een knop om het spel te starten" in the intro, just above the sign. */
-const PRESS_TEXT_Y = 850;
 /** Info cards shown via the info buttons disappear after this many ms. */
 const INFO_CARD_TIME = 4000;
 /** When nobody moves or clicks for this long during the game, the explanation card comes up again. */
@@ -212,7 +215,7 @@ export class GeschiedenisScene extends Scene {
   /** Brush and trowel shown on the title and intro screens. */
   private introBrush?: GameObjects.Image;
   private introTrowel?: GameObjects.Image;
-  private introPress?: GameObjects.Text;
+  private introPress?: GameObjects.Image;
   private infoButtons: GameObjects.Image[] = [];
   /** The players' hands, on the title, intro and end screens (while playing, the tools are the cursor). */
   private pointers!: PlayerPointers;
@@ -253,7 +256,8 @@ export class GeschiedenisScene extends Scene {
     // SVGs are turned into an image when loading (max 4096 px for GPU support).
     this.load.svg('gs-background', PATH + 'background.svg', { width: 3840, height: 2560 });
     this.load.svg('gs-sandbox', PATH + 'sandbox.svg', { width: 3840, height: 2110 });
-    this.load.svg('gs-intro-sign', PATH + 'sign.svg', { scale: RENDER_SCALE });
+    this.load.svg(INTRO_SIGN.key, PATH + INTRO_SIGN.file, { scale: RENDER_SCALE });
+    preloadStartButton(this);
     Object.values(CARDS).forEach((card) => this.load.svg(card.key, PATH + card.file, { scale: RENDER_SCALE }));
     Object.values(INFO_BUTTONS).forEach((info) =>
       this.load.svg(info.key, PATH + info.file, { width: INFO_BUTTON_SIZE * RENDER_SCALE, height: INFO_BUTTON_SIZE * RENDER_SCALE }),
@@ -480,29 +484,27 @@ export class GeschiedenisScene extends Scene {
   private showIntro() {
     this.state = 'intro';
 
+    // The sign comes down from the top and hangs still; the cards come up and keep swaying.
     const sign = this.add
-      .image(GAME_WIDTH / 2, CARD_BOTTOM_Y, 'gs-intro-sign')
-      .setOrigin(0.5, 1)
-      .setScale(0.87 / RENDER_SCALE)
+      .image(INTRO_SIGN.x, INTRO_SIGN.y, INTRO_SIGN.key)
+      .setOrigin(0.5, 0)
+      .setScale(INTRO_SIGN.scale / RENDER_SCALE)
       .setDepth(DEPTH.card);
     const cardP2 = this.addCard(CARDS.introP2);
     const cardP1 = this.addCard(CARDS.introP1);
+    dropIn(this, sign, { delay: 100, sway: false });
+    riseIn(this, cardP2, { delay: 400, gentle: true });
+    riseIn(this, cardP1, { delay: 550, gentle: true });
 
-    // The sign comes up once and then stands still; the cards keep swaying.
-    riseIn(this, sign, { delay: 100, sway: false });
-    riseIn(this, cardP2, { delay: 400 });
-    riseIn(this, cardP1, { delay: 550 });
-
-    // "druk op een knop om het spel te starten" just above the sign.
-    addPressButtonText(this, GAME_WIDTH / 2, PRESS_TEXT_Y, { depth: DEPTH.card, delay: 900 }).then((press) => {
-      if (!press) return;
-      if (this.state === 'intro' || this.state === 'introReady') this.introPress = press;
-      else press.destroy();
-    });
+    // "Druk op een knop om te starten" at the bottom.
+    this.introPress = addStartButton(this, START_BUTTON.x, START_BUTTON.y, { width: START_BUTTON.width, depth: DEPTH.card, delay: 900 });
 
     // The brush and trowel are already here: they came along from the title.
     const brush = this.introBrush ?? this.add.image(0, 0, 'gs-brush');
     const trowel = this.introTrowel ?? this.add.image(0, 0, 'gs-trowel');
+    // In front of the cards.
+    brush.setDepth(DEPTH.card + 1);
+    trowel.setDepth(DEPTH.card + 1);
 
     this.introObjects = [sign, cardP2, cardP1, brush, trowel];
     this.time.delayedCall(1400, () => (this.state = 'introReady'));
@@ -600,7 +602,7 @@ export class GeschiedenisScene extends Scene {
   /** A card on a stick that rises from below and sways. */
   private addCard(card: (typeof CARDS)[keyof typeof CARDS], x = card.x): GameObjects.Image {
     const image = this.add
-      .image(x, CARD_BOTTOM_Y, card.key)
+      .image(x, card.bottomY ?? CARD_BOTTOM_Y, card.key)
       .setOrigin(0.5, 1)
       .setScale(card.scale / RENDER_SCALE)
       .setDepth(DEPTH.card);
@@ -615,7 +617,7 @@ export class GeschiedenisScene extends Scene {
   private showCard(card: (typeof CARDS)[keyof typeof CARDS], x = card.x) {
     this.hideCard();
     this.card = this.addCard(card, x);
-    riseIn(this, this.card);
+    riseIn(this, this.card, { gentle: true });
   }
 
   /** Info button: shows the explanation for what that player has to do right now. */
