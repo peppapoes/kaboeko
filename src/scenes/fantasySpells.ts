@@ -12,12 +12,18 @@ export interface Point {
 }
 
 export interface SpellDef {
-  /** Shown above the shape while it has to be traced. */
+  /** Shown above the shape while it has to be traced (\n = new line). */
   name: string;
-  /** Shouted when the spell is cast. */
+  /** Shouted when the spell is cast (\n = new line). */
   shout: string;
-  /** What flies to the witch: a magic star, or a potion bottle. */
-  projectile: 'star' | 'potion';
+  /**
+   * What the spell does:
+   * - star: a magic star flies to the witch
+   * - potion: a potion bottle is thrown at the witch
+   * - monkeys: flying monkeys attack the witch (the Golden Cap spell from The Wizard of Oz calls them)
+   * - rabbit: a glowing rabbit (a Patronus) hops at the witch
+   */
+  effect: 'star' | 'potion' | 'monkeys' | 'rabbit';
   /**
    * The movement, from start to end. Coordinates from -1 to 1
    * (x: left -> right, y: top -> bottom); scaled to the spell area on screen.
@@ -49,7 +55,7 @@ export const SPELLS: SpellDef[] = [
   {
     name: 'Expelliarmus',
     shout: 'Expelliarmus!',
-    projectile: 'star',
+    effect: 'star',
     // A lightning bolt from top to bottom.
     shape: [
       { x: -0.5, y: -0.9 },
@@ -59,35 +65,24 @@ export const SPELLS: SpellDef[] = [
     ],
   },
   {
-    name: 'Ep-pe, pep-pe, kak-ke!',
-    shout: 'Ep-pe, pep-pe, kak-ke!',
-    projectile: 'star',
-    // A full circle, starting at the top, going right (clockwise).
-    shape: arc(-90, 270, 28),
-  },
-  {
-    name: 'Hil-lo, hol-lo, hel-lo!',
-    shout: 'Hil-lo, hol-lo, hel-lo!',
-    projectile: 'star',
+    name: 'Expecto Patronum',
+    shout: 'Expecto Patronum!',
+    effect: 'rabbit',
     // A wave, from left to right.
     shape: wave(1.5, 0.45, 30),
   },
   {
-    name: 'Ziz-zy, zuz-zy, zik!',
-    shout: 'Ziz-zy, zuz-zy, zik!',
-    projectile: 'star',
-    // A big Z.
-    shape: [
-      { x: -0.8, y: -0.7 },
-      { x: 0.8, y: -0.7 },
-      { x: -0.8, y: 0.7 },
-      { x: 0.8, y: 0.7 },
-    ],
+    // The Golden Cap spell from The Wizard of Oz: one spell in three parts.
+    name: 'Ep-pe, pep-pe, kak-ke!\nHil-lo, hol-lo, hel-lo!\nZiz-zy, zuz-zy, zik!',
+    shout: 'Ep-pe, pep-pe, kak-ke!\nHil-lo, hol-lo, hel-lo!\nZiz-zy, zuz-zy, zik!',
+    effect: 'monkeys',
+    // A full circle, starting at the top, going right (clockwise).
+    shape: arc(-90, 270, 28),
   },
   {
     name: 'Toverdrank!',
     shout: 'Toverdrank!',
-    projectile: 'potion',
+    effect: 'potion',
     // Throwing a potion: a big arch from bottom left over the top to bottom right.
     shape: arc(180, 360, 20, 0.85, 0.85).map((p) => ({ x: p.x, y: p.y + 0.4 })),
   },

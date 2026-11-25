@@ -1,4 +1,4 @@
-import { GameObjects, Input, Math as PMath, Scene, type Tweens, type Types } from 'phaser';
+import { GameObjects, Input, Math as PMath, Scene, type Time, type Tweens, type Types } from 'phaser';
 import { GAME_HEIGHT, GAME_WIDTH, RENDER_SCALE, setupCamera } from '../config';
 import { inputManager } from '../input/InputManager';
 import { dropIn, popIn, riseIn, setRestAngle, sinkOut, slideIn, slideOut } from '../puppet';
@@ -110,12 +110,49 @@ const SIGN = {
   svgWidth: 1138,
   scale: 0.8,
   topY: -100,
-  title: { text: 'Versla de heks!', x: 564, y: 362 },
-  text: { text: 'Toveren en beschermen: samen zijn jullie sterker dan de heks!', x: 564, y: 428 },
+  title: { text: 'Versla de heks!', x: 564, y: 358 },
+  /** y = top of the text (it can be two lines). */
+  text: { text: 'Toveren en beschermen: samen zijn jullie sterker dan de heks!', x: 564, y: 400 },
+  /** Text wider than this (SVG pixels) goes on the next line. */
+  textWidth: 860,
 };
+/** The rounded font of the wooden signs (see index.html). */
+const SIGN_FONT = 'Andika';
 
-/** The sign when the witch is beaten. */
-const WIN_SIGN = { title: 'Gewonnen!', text: 'Samen hebben jullie de heks verslagen!' };
+/**
+ * The end: the book that comes out of the "poef" cloud. The same book as at
+ * the end of geschiedenis (the last thing you dig up there), closed and open.
+ */
+const BOOK = {
+  closedKey: 'fantasy-book',
+  closedFile: 'assets/minigame-geschiedenis/book.png',
+  /** Height of the closed book on screen. */
+  closedHeight: 420,
+  openKey: 'fantasy-book-open',
+  openFile: 'assets/minigame-geschiedenis/book-1.png',
+  /** The book can be clicked open this long (ms) after it appeared (when the clouds are gone). */
+  readyDelay: 1600,
+  /** "druk op een knop om het boek te openen", below the closed book. */
+  hintY: 830,
+};
+/**
+ * The witch's disappearing act (ms): how long she holds her face, and how long
+ * the cartoon "poef" cloud stays before it dissolves (and shows the book behind it).
+ */
+const WITCH_END = { holdTime: 1300, cloudTime: 1300 };
+/**
+ * The "poef" cloud: little clouds around the witch's middle (x/y offset in game
+ * pixels, size = width on screen). Together they cover the whole witch.
+ */
+const POOF_CLOUDS = [
+  { x: 0, y: 60, size: 520 },
+  { x: -170, y: -110, size: 380 },
+  { x: 170, y: -90, size: 400 },
+  { x: 0, y: -280, size: 400 },
+  { x: -150, y: 250, size: 360 },
+  { x: 150, y: 270, size: 360 },
+  { x: 10, y: -440, size: 300 },
+];
 
 // ---------------------------------------------------------------------------
 // The game — tweak these to make it easier/harder or to move things around
@@ -144,6 +181,8 @@ const WITCH_POSES = {
 const WITCH_POSE_TIME = { attack: 700, hit: 800 };
 /** How much health the witch loses per hit. */
 const DAMAGE = { bounce: 10, spell: 12 };
+/** How much health the witch gets back when an attack is not caught with the umbrella. */
+const HEAL_ON_MISS = 8;
 
 /** The witch's health bar at the top, with a heart in front. */
 const HEALTH_BAR = { x: 1040, y: 98, width: 820, height: 38, border: 6, heartSize: 96 };
@@ -201,10 +240,16 @@ const SPELL = {
   hitRadius: 75,
 };
 const SPELL_COLOR = 0xffd84a;
+/** Expecto Patronum: the glowing rabbit (size = width on screen, alpha = how see-through, hops on its way). */
+const PATRONUS = { size: 260, alpha: 0.85, runTime: 1300, hops: 3 };
+/** The Golden Cap spell: how many flying monkeys attack the witch, and the time between them. */
+const MONKEY_SPELL = { count: 3, gap: 220, size: 170 };
 
 /** Images that are drawn in code (see makeTextures). */
 const SPARK_KEY = 'fantasy-spark';
 const HEART_KEY = 'fantasy-heart';
+const PATRONUS_KEY = 'fantasy-patronus';
+const CLOUD_KEY = 'fantasy-cloud';
 
 /** Draw order (higher = on top). */
 const DEPTH = {
@@ -217,12 +262,14 @@ const DEPTH = {
   hud: 8,
   players: 10,
   shout: 12,
+  smoke: 11,
   backButton: 14,
   card: 15,
   introProp: 16,
+  book: 18,
 };
 
-type State = 'title' | 'titleReady' | 'intro' | 'introReady' | 'busy' | 'playing' | 'wonReady';
+type State = 'title' | 'titleReady' | 'intro' | 'introReady' | 'busy' | 'playing' | 'bookReady' | 'done';
 type AttackKind = 'monkey' | 'potion';
 
 /** An attack of the witch that is on its way. */
@@ -258,6 +305,12 @@ export class FantasyScene extends Scene {
   private introPress?: GameObjects.Text;
   /** The players' hands, on the title and intro (while playing, the wand and umbrella are the cursor). */
   private pointers!: PlayerPointers;
+  private backButton?: GameObjects.Image;
+  /** The end: the closed book (opened with a button press). */
+  private closedBook?: GameObjects.Image;
+  private closedBookScale = 1;
+  private bookSparkles?: Time.TimerEvent;
+  private bookHint?: GameObjects.Text;
 
   private umbrellaClosed!: GameObjects.Image;
   private umbrellaOpen!: GameObjects.Image;
@@ -279,6 +332,7 @@ export class FantasyScene extends Scene {
   private healthFill!: GameObjects.Graphics;
   /** The fraction of the bar that is shown (slides to the real value). */
   private healthShown = 1;
+  private healthTween?: Tweens.Tween;
   private attack?: Attack;
   private spell?: ActiveSpell;
   private lastSpell?: SpellDef;
@@ -305,6 +359,8 @@ export class FantasyScene extends Scene {
     svg('fantasy-umbrella-open', 'umbrellaOpen.svg');
     svg('fantasy-umbrella-closed', 'umbrella-closed.svg');
     svg(SIGN.key, SIGN.file);
+    this.load.image(BOOK.closedKey, BOOK.closedFile);
+    this.load.image(BOOK.openKey, BOOK.openFile);
     Object.values(CARDS).forEach((card) => svg(card.key, card.file));
     // Shared with the geschiedenis game.
     this.load.image('fantasy-back', 'assets/minigame-geschiedenis/back-button.png');
@@ -335,6 +391,9 @@ export class FantasyScene extends Scene {
     this.attack = undefined;
     this.spell = undefined;
     this.lastSpell = undefined;
+    this.closedBook = undefined;
+    this.bookSparkles = undefined;
+    this.bookHint = undefined;
     this.heldKeys.clear();
     this.makeTextures();
 
@@ -376,7 +435,7 @@ export class FantasyScene extends Scene {
   private pressButton() {
     if (this.state === 'titleReady') this.leaveTitle();
     else if (this.state === 'introReady') this.startGame();
-    else if (this.state === 'wonReady') this.leaveGame();
+    else if (this.state === 'bookReady') this.openBook();
   }
 
   /** Player 1's button (controller button or Space): opens/closes the umbrella while playing. */
@@ -401,6 +460,7 @@ export class FantasyScene extends Scene {
         this.cameras.main.once('camerafadeoutcomplete', () => this.scene.start('MenuScene', { skipTitle: true }));
       });
     popIn(this, button, { delay: 300 });
+    this.backButton = button;
   }
 
   // ---------------------------------------------------------------------------
@@ -408,7 +468,12 @@ export class FantasyScene extends Scene {
   // ---------------------------------------------------------------------------
 
   private async showTitle() {
-    await document.fonts.load(`700 ${TITLE.fontSize}px Oswald`);
+    // Also the sign's font now, so it is ready when the intro comes.
+    await Promise.all([
+      document.fonts.load(`700 ${TITLE.fontSize}px Oswald`),
+      document.fonts.load(`700 40px ${SIGN_FONT}`),
+      document.fonts.load(`400 24px ${SIGN_FONT}`),
+    ]);
     // The player may have left the scene while the font was loading.
     if (!this.sys.isActive() || this.state !== 'title') return;
 
@@ -608,9 +673,9 @@ export class FantasyScene extends Scene {
     const title = at(SIGN.title);
     const titleText = this.add
       .text(title.x, title.y, heading, {
-        fontFamily: 'Oswald',
-        fontStyle: '600',
-        fontSize: `${Math.round(48 * SIGN.scale)}px`,
+        fontFamily: SIGN_FONT,
+        fontStyle: '700',
+        fontSize: `${Math.round(46 * SIGN.scale)}px`,
         color: '#ffffff',
         resolution: RENDER_SCALE,
       })
@@ -618,13 +683,16 @@ export class FantasyScene extends Scene {
     const text = at(SIGN.text);
     const bodyText = this.add
       .text(text.x, text.y, body, {
-        fontFamily: 'Oswald',
-        fontStyle: '500',
+        fontFamily: SIGN_FONT,
+        fontStyle: '400',
         fontSize: `${Math.round(30 * SIGN.scale)}px`,
+        align: 'center',
+        // Andika is wider than Oswald: long text goes on two lines.
+        wordWrap: { width: SIGN.textWidth * SIGN.scale },
         color: '#ffffff',
         resolution: RENDER_SCALE,
       })
-      .setOrigin(0.5);
+      .setOrigin(0.5, 0);
 
     return this.add.container(GAME_WIDTH / 2, SIGN.topY, [image, titleText, bodyText]).setDepth(DEPTH.card);
   }
@@ -853,14 +921,16 @@ export class FantasyScene extends Scene {
 
     const backdrop = this.add.circle(0, 0, SPELL_AREA.size * 0.72, 0x03314e, 0.6);
     const name = this.add
-      .text(0, -SPELL_AREA.size * 0.72 - 40, spell.name, {
+      .text(0, -SPELL_AREA.size * 0.72 - 14, spell.name, {
         fontFamily: 'Oswald',
         fontStyle: '600',
         fontSize: '40px',
         color: '#ffffff',
+        align: 'center',
         resolution: RENDER_SCALE,
       })
-      .setOrigin(0.5);
+      // Bottom-center: a name of more lines grows upwards.
+      .setOrigin(0.5, 1);
     const local = dots.map((d) => ({ x: d.x - SPELL_AREA.x, y: d.y - SPELL_AREA.y }));
     const dotsGraphics = this.add.graphics();
     dotsGraphics.fillStyle(0xffffff, 0.75);
@@ -945,7 +1015,7 @@ export class FantasyScene extends Scene {
     this.spell = undefined;
     this.tweens.add({ targets: spell.view, alpha: 0, scale: 1.15, duration: 350, onComplete: () => spell.view.destroy() });
 
-    this.shout(spell.def.shout, SPELL_AREA.x, SPELL_AREA.y - SPELL_AREA.size * 0.72 - 40, '#FFD84A');
+    this.shout(spell.def.shout, SPELL_AREA.x, SPELL_AREA.y - SPELL_AREA.size * 0.72 - 60, '#FFD84A');
 
     const from = { x: this.wandAt.x, y: this.wandAt.y };
     const target = this.witchChest();
@@ -955,7 +1025,11 @@ export class FantasyScene extends Scene {
       this.time.delayedCall(SPELL.nextDelay, () => this.showNextSpell());
     };
 
-    if (spell.def.projectile === 'potion') {
+    if (spell.def.effect === 'rabbit') {
+      this.patronus(from, target, onHit);
+    } else if (spell.def.effect === 'monkeys') {
+      this.monkeysAttack(from, target, onHit);
+    } else if (spell.def.effect === 'potion') {
       const potion = this.add.image(from.x, from.y, 'fantasy-potion').setDepth(DEPTH.projectile);
       potion.setScale(110 / potion.height);
       this.flyArc(potion, from, target, 260, 750, () => {
@@ -982,6 +1056,63 @@ export class FantasyScene extends Scene {
     }
   }
 
+  /** Expecto Patronum: a light, see-through rabbit hops from the wand to the witch. */
+  private patronus(from: { x: number; y: number }, target: { x: number; y: number }, onHit: () => void) {
+    const rabbit = this.add
+      .image(from.x, from.y - 80, PATRONUS_KEY)
+      .setDepth(DEPTH.projectile)
+      .setAlpha(0)
+      .setScale(0.2 / RENDER_SCALE);
+    const scale = PATRONUS.size / (rabbit.width / RENDER_SCALE) / RENDER_SCALE;
+    // It appears out of the wand...
+    this.tweens.add({ targets: rabbit, alpha: PATRONUS.alpha, scale, duration: 450, ease: 'Back.Out' });
+    // ...and hops to the witch in a few big jumps, leaving a trail of light.
+    const trail = this.time.addEvent({ delay: 45, loop: true, callback: () => this.sparkle(rabbit.x, rabbit.y + 60) });
+    const start = { x: rabbit.x, y: rabbit.y };
+    this.tweens.addCounter({
+      from: 0,
+      to: 1,
+      delay: 350,
+      duration: PATRONUS.runTime,
+      onUpdate: (t) => {
+        const p = t.getValue() ?? 0;
+        const hop = Math.abs(Math.sin(p * Math.PI * PATRONUS.hops));
+        rabbit.x = start.x + (target.x - start.x) * p;
+        rabbit.y = start.y + (target.y - start.y) * p - hop * 90;
+        // Squashed a little when it lands, stretched in the air.
+        rabbit.setScale(scale * (1 + (hop - 0.5) * 0.08), scale * (1 + (0.5 - hop) * 0.08 + hop * 0.06));
+        rabbit.angle = Math.cos(p * Math.PI * PATRONUS.hops) * 8;
+      },
+      onComplete: () => {
+        trail.remove();
+        onHit();
+        // It fades away in the light.
+        this.tweens.add({ targets: rabbit, alpha: 0, scale: scale * 1.4, duration: 400, onComplete: () => rabbit.destroy() });
+      },
+    });
+  }
+
+  /** The Golden Cap spell: flying monkeys fly at the witch, one after the other. */
+  private monkeysAttack(from: { x: number; y: number }, target: { x: number; y: number }, onHit: () => void) {
+    for (let i = 0; i < MONKEY_SPELL.count; i++) {
+      this.time.delayedCall(i * MONKEY_SPELL.gap, () => {
+        const start = { x: from.x + PMath.Between(-60, 60), y: from.y - 80 - i * 50 };
+        const end = { x: target.x + PMath.Between(-90, 90), y: target.y + PMath.Between(-150, 100) };
+        const monkey = this.add.image(start.x, start.y, 'fantasy-monkey').setDepth(DEPTH.projectile);
+        const scale = MONKEY_SPELL.size / Math.max(monkey.width, monkey.height);
+        monkey.setScale(scale).setFlipX(end.x > start.x);
+        // Flapping wings while it flies.
+        this.tweens.add({ targets: monkey, scaleY: scale * 0.88, duration: 110, yoyo: true, repeat: -1 });
+        this.flyArc(monkey, start, end, 140, 800, () => {
+          this.burst(monkey.x, monkey.y);
+          monkey.destroy();
+          // The witch is hit when the last monkey arrives.
+          if (i === MONKEY_SPELL.count - 1) onHit();
+        });
+      });
+    }
+  }
+
   // ---------------------------------------------------------------------------
   // The witch
   // ---------------------------------------------------------------------------
@@ -1003,6 +1134,7 @@ export class FantasyScene extends Scene {
     const heart = this.add.image(bar.x - 10, bar.y, HEART_KEY).setScale(1 / RENDER_SCALE);
     this.healthBar = this.add.container(0, 0, [frame, this.healthFill, heart]).setDepth(DEPTH.hud);
     this.healthShown = 1;
+    this.healthTween = undefined;
     this.drawHealth(1);
     this.healthBar.setAlpha(0);
     this.tweens.add({ targets: this.healthBar, alpha: 1, duration: 400, delay: 300 });
@@ -1018,12 +1150,10 @@ export class FantasyScene extends Scene {
       .fillRoundedRect(bar.x, bar.y - bar.height / 2, Math.max(width, bar.height), bar.height, bar.height / 2);
   }
 
-  private damageWitch(amount: number) {
-    if (this.state !== 'playing') return;
-    this.witchHealth = Math.max(0, this.witchHealth - amount);
-
-    // The bar slides down to the new value.
-    this.tweens.addCounter({
+  /** The bar slides to the witch's health now (down after a hit, up when she heals). */
+  private slideHealthBar() {
+    this.healthTween?.remove();
+    this.healthTween = this.tweens.addCounter({
       from: this.healthShown,
       to: this.witchHealth / WITCH.health,
       duration: 400,
@@ -1033,6 +1163,26 @@ export class FantasyScene extends Scene {
         this.drawHealth(this.healthShown);
       },
     });
+  }
+
+  /** The attack was not caught: the witch gets stronger again (never more than full). */
+  private healWitch(amount: number) {
+    if (this.state !== 'playing' || this.witchHealth >= WITCH.health) return;
+    this.witchHealth = Math.min(WITCH.health, this.witchHealth + amount);
+    this.slideHealthBar();
+    // A green glow and a few sparkles on the witch.
+    this.witch.setTint(0xa8f0a0);
+    this.time.delayedCall(350, () => this.witch.clearTint());
+    const chest = this.witchChest();
+    for (let i = 0; i < 6; i++) {
+      this.time.delayedCall(i * 70, () => this.sparkle(chest.x + PMath.Between(-120, 120), chest.y + PMath.Between(-150, 150)));
+    }
+  }
+
+  private damageWitch(amount: number) {
+    if (this.state !== 'playing') return;
+    this.witchHealth = Math.max(0, this.witchHealth - amount);
+    this.slideHealthBar();
 
     // Ouch: hand on her face, a red flash and a little shake.
     this.setWitchPose('hit', WITCH_POSE_TIME.hit);
@@ -1153,7 +1303,9 @@ export class FantasyScene extends Scene {
       const away = sprite.flipX ? GAME_WIDTH + 300 : -300;
       this.tweens.add({ targets: sprite, x: away, y: sprite.y - 400, duration: 900, ease: 'Quad.In', onComplete: () => sprite.destroy() });
     }
+    // The witch laughs and gets some health back.
     if (this.state === 'playing') this.shout('Hihihi!', WITCH.x, WITCH.bottomY - 800, '#C9A8FF');
+    this.healWitch(HEAL_ON_MISS);
     this.endAttack(attack);
   }
 
@@ -1183,53 +1335,96 @@ export class FantasyScene extends Scene {
     }
     this.removeGameplayInput();
 
-    // The witch spins away in a cloud of stars.
+    // The witch holds her face for a moment...
     this.witch.setTexture(WITCH_POSES.hit);
-    this.time.delayedCall(500, () => {
+    this.tweens.add({ targets: this.healthBar, alpha: 0, duration: 400 });
+
+    // ...then POEF: a cartoon cloud, and she's gone. The book comes out when the cloud dissolves.
+    this.time.delayedCall(WITCH_END.holdTime, () => {
       const chest = this.witchChest();
-      for (let i = 0; i < 4; i++) this.time.delayedCall(i * 150, () => this.burst(chest.x + PMath.Between(-120, 120), chest.y + PMath.Between(-200, 200)));
-      this.tweens.killTweensOf(this.witch);
-      this.tweens.add({ targets: this.witch, angle: 720, scale: 0, duration: 900, ease: 'Back.In' });
-      this.tweens.add({ targets: this.healthBar, alpha: 0, duration: 400 });
+      this.poof(chest.x, chest.y, () => this.showBook());
+      // Hidden as soon as the cloud covers her.
+      this.time.delayedCall(250, () => {
+        this.tweens.killTweensOf(this.witch);
+        this.witch.setVisible(false);
+      });
     });
 
-    // Hands back instead of the wand and umbrella.
-    this.time.delayedCall(1500, () => {
+    // The wand and umbrella go; the hands come back.
+    this.time.delayedCall(WITCH_END.holdTime + 500, () => {
       for (const prop of [this.umbrellaOpen, this.umbrellaClosed, this.wand, this.umbrellaBadge, this.wandBadge]) {
         this.tweens.add({ targets: prop, alpha: 0, duration: 300 });
       }
       this.pointers.show();
-
-      const sign = this.makeSign(WIN_SIGN.title, WIN_SIGN.text);
-      dropIn(this, sign, { distance: 500, sway: false });
-      this.addBlinkingText('druk op een knop om terug te gaan', GAME_WIDTH / 2, PRESS_TEXT_Y, 600);
-      this.time.delayedCall(1200, () => (this.state = 'wonReady'));
     });
   }
 
-  /** Blinking white text, like "druk op een knop om het spel te starten". */
-  private addBlinkingText(text: string, x: number, y: number, delay: number) {
-    const label = this.add
-      .text(x, y, text, {
-        fontFamily: 'Oswald',
-        fontStyle: '500',
-        fontSize: '34px',
-        color: '#FFFFFF',
-        resolution: RENDER_SCALE,
-      })
-      .setOrigin(0.5)
-      .setDepth(DEPTH.card)
-      .setAlpha(0);
-    this.tweens.add({ targets: label, alpha: { from: 0.25, to: 1 }, delay, duration: 800, yoyo: true, repeat: -1, ease: 'Sine.InOut' });
+  /** The closed book appears where the witch was. A button press (or click) opens it. */
+  private showBook() {
+    const chest = this.witchChest();
+    // Just behind the clouds: it is there when they shrink away.
+    const closed = this.add.image(chest.x, chest.y, BOOK.closedKey).setDepth(DEPTH.smoke - 0.5);
+    const scale = BOOK.closedHeight / closed.height;
+
+    // It pops out of the smoke with some sparkles, and floats a little.
+    closed.setScale(0);
+    this.tweens.add({ targets: closed, scale, duration: 600, ease: 'Back.Out' });
+    this.tweens.add({ targets: closed, angle: { from: -12, to: 0 }, duration: 1200, ease: 'Elastic.Out' });
+    this.tweens.add({ targets: closed, y: chest.y - 20, duration: 900, yoyo: true, repeat: -1, ease: 'Sine.InOut', delay: 600 });
+    this.burst(chest.x, chest.y);
+    this.bookSparkles = this.time.addEvent({
+      delay: 90,
+      loop: true,
+      callback: () => this.sparkle(closed.x + PMath.Between(-150, 150), closed.y + PMath.Between(-180, 180)),
+    });
+    this.closedBook = closed;
+    this.closedBookScale = scale;
+
+    // "Open the book": blinking text below it.
+    this.time.delayedCall(BOOK.readyDelay, () => {
+      this.bookHint = this.add
+        .text(GAME_WIDTH / 2, BOOK.hintY, 'druk op een knop om het boek te openen', {
+          fontFamily: 'Oswald',
+          fontStyle: '500',
+          fontSize: '34px',
+          color: '#FFFFFF',
+          resolution: RENDER_SCALE,
+        })
+        .setOrigin(0.5)
+        .setDepth(DEPTH.book)
+        .setAlpha(0);
+      this.tweens.add({ targets: this.bookHint, alpha: { from: 0.25, to: 1 }, duration: 800, yoyo: true, repeat: -1, ease: 'Sine.InOut' });
+      this.state = 'bookReady';
+    });
   }
 
-  /** Back to the genre choice in the menu. */
-  private leaveGame() {
-    this.state = 'busy';
-    this.input.enabled = false;
-    this.cameras.main.fadeOut(400, 0, 0, 0);
-    this.cameras.main.once('camerafadeoutcomplete', () => this.scene.start('MenuScene', { skipTitle: true }));
+  /** Dark background, and the book opens big in the middle (like at the end of geschiedenis). */
+  private openBook() {
+    this.state = 'done';
+    this.bookSparkles?.remove();
+    this.bookHint?.destroy();
+    const closed = this.closedBook;
+    if (closed) {
+      this.tweens.killTweensOf(closed);
+      this.tweens.add({ targets: closed, alpha: 0, scale: this.closedBookScale * 1.2, duration: 400 });
+    }
+
+    const overlay = this.add
+      .rectangle(0, 0, GAME_WIDTH, GAME_HEIGHT, 0x000000)
+      .setOrigin(0)
+      .setDepth(DEPTH.book - 1)
+      .setAlpha(0);
+    this.tweens.add({ targets: overlay, alpha: 0.8, duration: 400 });
+
+    const open = this.add.image(GAME_WIDTH / 2, GAME_HEIGHT / 2, BOOK.openKey).setDepth(DEPTH.book + 1).setAlpha(0);
+    const openScale = Math.min((GAME_WIDTH * 0.9) / open.width, (GAME_HEIGHT * 0.85) / open.height);
+    open.setScale(openScale * 0.6);
+    this.tweens.add({ targets: open, alpha: 1, scale: openScale, duration: 600, ease: 'Back.Out' });
+
+    // The back button goes on top, to go back to the menu.
+    this.backButton?.setDepth(DEPTH.book + 2);
   }
+
 
   // ---------------------------------------------------------------------------
   // Effects
@@ -1257,6 +1452,110 @@ export class FantasyScene extends Scene {
         texture.refresh();
       }
     }
+    if (!this.textures.exists(CLOUD_KEY)) {
+      // A flat cartoon cloud with a white sticker border, like the other drawings.
+      const w = 300 * RENDER_SCALE;
+      const h = 230 * RENDER_SCALE;
+      const texture = this.textures.createCanvas(CLOUD_KEY, w, h);
+      const ctx = texture?.getContext();
+      if (texture && ctx) {
+        // Bumps of the cloud: x, y, radius (as a fraction of the width).
+        const bumps = [
+          [0.27, 0.6, 0.19],
+          [0.45, 0.4, 0.24],
+          [0.68, 0.45, 0.2],
+          [0.75, 0.66, 0.16],
+          [0.5, 0.68, 0.2],
+        ];
+        const circles = (grow: number, dx = 0, dy = 0, shrink = 1) => {
+          ctx.beginPath();
+          for (const [x, y, r] of bumps) {
+            const cx = (x + dx) * w;
+            const cy = y * h + dy * w;
+            const radius = r * shrink * w + grow;
+            ctx.moveTo(cx + radius, cy);
+            ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+          }
+        };
+        const border = 9 * RENDER_SCALE;
+        circles(border);
+        ctx.fillStyle = '#FFFFFF';
+        ctx.fill();
+        circles(0);
+        ctx.fillStyle = '#BFB2E6';
+        ctx.fill();
+        // Lighter top part, so the shadow shows at the bottom.
+        ctx.save();
+        circles(0);
+        ctx.clip();
+        circles(0, -0.02, -0.05, 0.92);
+        ctx.fillStyle = '#E9E3F8';
+        ctx.fill();
+        ctx.restore();
+        texture.refresh();
+      }
+    }
+    if (!this.textures.exists(PATRONUS_KEY)) {
+      // A glowing rabbit face (seen from the front), light blue and a bit see-through.
+      const size = 300 * RENDER_SCALE;
+      const texture = this.textures.createCanvas(PATRONUS_KEY, size, size);
+      const ctx = texture?.getContext();
+      if (texture && ctx) {
+        ctx.scale(size / 300, size / 300);
+        ctx.shadowColor = '#7FD8FF';
+        ctx.shadowBlur = 24;
+        ctx.fillStyle = '#E4F6FF';
+        // Long ears, a round head and chubby cheeks.
+        const ellipse = (x: number, y: number, rx: number, ry: number, angle = 0) => {
+          ctx.beginPath();
+          ctx.ellipse(x, y, rx, ry, angle, 0, Math.PI * 2);
+          ctx.fill();
+        };
+        ellipse(112, 82, 26, 72, -0.22);
+        ellipse(188, 82, 26, 72, 0.22);
+        ellipse(150, 182, 82, 74);
+        ellipse(118, 220, 46, 36);
+        ellipse(182, 220, 46, 36);
+        // Inside of the ears: a little lighter.
+        ctx.shadowBlur = 0;
+        ctx.fillStyle = '#B9E8FF';
+        ellipse(113, 88, 12, 50, -0.22);
+        ellipse(187, 88, 12, 50, 0.22);
+        // Eyes, nose and mouth are cut out, so you see through them.
+        ctx.globalCompositeOperation = 'destination-out';
+        ellipse(120, 172, 11, 14);
+        ellipse(180, 172, 11, 14);
+        ctx.beginPath();
+        ctx.moveTo(138, 204);
+        ctx.lineTo(162, 204);
+        ctx.lineTo(150, 216);
+        ctx.closePath();
+        ctx.fill();
+        ctx.lineWidth = 5;
+        ctx.lineCap = 'round';
+        ctx.beginPath();
+        ctx.moveTo(150, 216);
+        ctx.lineTo(150, 228);
+        ctx.quadraticCurveTo(140, 240, 130, 232);
+        ctx.moveTo(150, 228);
+        ctx.quadraticCurveTo(160, 240, 170, 232);
+        ctx.stroke();
+        // Whiskers, sticking out next to the cheeks.
+        ctx.globalCompositeOperation = 'source-over';
+        ctx.strokeStyle = '#E4F6FF';
+        ctx.shadowBlur = 10;
+        ctx.lineWidth = 4;
+        ctx.beginPath();
+        for (const side of [-1, 1]) {
+          for (const dy of [-10, 6]) {
+            ctx.moveTo(150 + side * 70, 214 + dy);
+            ctx.lineTo(150 + side * 128, 206 + dy * 2);
+          }
+        }
+        ctx.stroke();
+        texture.refresh();
+      }
+    }
     if (!this.textures.exists(HEART_KEY)) {
       const size = HEALTH_BAR.heartSize * RENDER_SCALE;
       const texture = this.textures.createCanvas(HEART_KEY, size, size);
@@ -1279,22 +1578,28 @@ export class FantasyScene extends Scene {
 
   /** Text that pops up, floats up a bit and disappears. */
   private shout(text: string, x: number, y: number, color: string) {
+    // Text of more lines (a long spell) is a bit smaller.
+    const lines = text.split('\n').length;
     const label = this.add
-      .text(PMath.Clamp(x, 260, GAME_WIDTH - 260), y, text, {
+      .text(x, y, text, {
         fontFamily: 'Oswald',
         fontStyle: '700',
-        fontSize: '56px',
+        fontSize: lines > 1 ? '46px' : '56px',
         color,
+        align: 'center',
         resolution: RENDER_SCALE,
       })
       .setOrigin(0.5)
       .setDepth(DEPTH.shout);
+    // Always fully on screen.
+    label.x = PMath.Clamp(x, label.width / 2 + 20, GAME_WIDTH - label.width / 2 - 20);
+    label.y = Math.max(y, label.height / 2 + 20);
     this.tweens.add({ targets: label, scale: { from: 0, to: 1 }, duration: 400, ease: 'Back.Out' });
     this.tweens.add({
       targets: label,
-      y: y - 70,
+      y: label.y - 70,
       alpha: 0,
-      delay: 900,
+      delay: 900 + (lines - 1) * 600,
       duration: 500,
       onComplete: () => label.destroy(),
     });
@@ -1319,6 +1624,57 @@ export class FantasyScene extends Scene {
         onComplete: () => star.destroy(),
       });
     }
+  }
+
+  /**
+   * Cartoon "poef": clouds pop up one after the other (with a POEF! and stars),
+   * stay a moment, then shrink away one by one. `onDissolve` is called just
+   * before they go, so something can appear behind them.
+   */
+  private poof(x: number, y: number, onDissolve: () => void) {
+    const clouds = POOF_CLOUDS.map((spot, i) => {
+      const cloud = this.add
+        .image(x + spot.x, y + spot.y, CLOUD_KEY)
+        .setDepth(DEPTH.smoke)
+        .setAngle(PMath.Between(-12, 12))
+        .setFlipX(i % 2 === 1)
+        .setScale(0);
+      const scale = spot.size / cloud.width;
+      this.tweens.add({ targets: cloud, scale, delay: i * 45, duration: 320, ease: 'Back.Out', easeParams: [2.5] });
+      // A little wobble while it hangs there.
+      this.tweens.add({
+        targets: cloud,
+        scale: scale * 1.06,
+        delay: 400 + i * 45,
+        duration: 260,
+        yoyo: true,
+        repeat: -1,
+        ease: 'Sine.InOut',
+      });
+      return cloud;
+    });
+
+    this.burst(x, y);
+    this.shout('POEF!', x, y - 40, '#5B3FA0');
+
+    // Then the clouds shrink away one by one, with a few stars.
+    this.time.delayedCall(WITCH_END.cloudTime - 500, onDissolve);
+    this.time.delayedCall(WITCH_END.cloudTime, () => {
+      clouds.forEach((cloud, i) => {
+        this.time.delayedCall(i * 90, () => {
+          this.tweens.killTweensOf(cloud);
+          this.sparkle(cloud.x, cloud.y);
+          this.tweens.add({
+            targets: cloud,
+            scale: 0,
+            angle: cloud.angle + PMath.Between(-40, 40),
+            duration: 350,
+            ease: 'Back.In',
+            onComplete: () => cloud.destroy(),
+          });
+        });
+      });
+    });
   }
 
   /** A small fading star (trail behind a spell). */
