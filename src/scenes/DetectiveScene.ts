@@ -93,8 +93,12 @@ const CLUES: { id: ClueId; key: string; file: string; x: number; y: number; widt
   { id: 'moustache', key: 'dt-clue-moustache', file: 'kamensnorwax.svg', x: 1580, y: 726, width: 165, tipKey: 'dt-tip-moustache', tipFile: 'snor-tip.svg' },
 ];
 
-/** Magnifying glass on a clue (px from the clue's edge): it grows a little; a click finds it. */
-const CLUE_HOVER = { distance: 20, grow: 1.15 };
+/**
+ * Clues are hidden: they only show under the magnifying glass.
+ * reveal = how close (px from the clue's edge) it is fully visible / not visible at all.
+ * distance = glass this close: it grows a little and a click finds it.
+ */
+const CLUE_HOVER = { distance: 20, grow: 1.15, reveal: { full: 30, none: 160 } };
 
 /**
  * The suspects. `quote` = shown when he is pointed out (no quote yet = only "FOUT!").
@@ -142,8 +146,38 @@ const WALK = {
   peekTime: 1800,
   pause: 1300,
 };
-/** Caught suspects: a row at the bottom. */
-const CAUGHT_ROW = { x: 780, y: 1272, gap: 130, height: 190 };
+/**
+ * Caught suspects go on the "Verdachtes" sign on the left. It is folded away
+ * (only the label sticks out) and folds out each time someone is caught.
+ * Fractions are of the sign image (699 x 888).
+ */
+const SUSPECT_SIGN = {
+  key: 'dt-sign-suspects',
+  file: 'verdachtes-sign.svg',
+  width: 699,
+  height: 888,
+  /**
+   * Left edge of the sign image on screen when open (negative = partly off screen,
+   * so only a bit of the post shows), its top, and its size.
+   * foldedOffset = how far it slides further left when folded away (fraction of its width).
+   */
+  x: -205,
+  y: 110,
+  scale: 0.84,
+  foldedOffset: 0.5,
+  /** How long it stays open after a catch (ms). */
+  openTime: 1800,
+  /** The silhouettes: center of each slot, its height, and the board colour behind them. */
+  slots: {
+    'dt-hook': { x: 0.63, y: 0.2 },
+    'dt-wolf': { x: 0.63, y: 0.385 },
+    'dt-moriarty': { x: 0.63, y: 0.585 },
+    'dt-bowler': { x: 0.63, y: 0.795 },
+  } as Record<string, { x: number; y: number }>,
+  slotWidth: 0.27,
+  slotHeight: 0.19,
+  board: 0x743e21,
+};
 
 /** Notebook (search): small in the corner, or big in front. Fractions are of the notebook image. */
 const NOTEBOOK = {
@@ -234,6 +268,9 @@ export class DetectiveScene extends Scene {
   private notebookCount?: GameObjects.Text;
   private foundCount = 0;
   private caughtCount = 0;
+  /** The "Verdachtes" sign (search) and the timer that folds it away again. */
+  private suspectSign?: GameObjects.Container;
+  private foldTimer?: Phaser.Time.TimerEvent;
   /** Accusation: the check/cross marks on the horizontal notebook (live, for the suspect under the glass). */
   /** Accusation: the sign and notebook, and the "FOUT!" + quote of a wrong suspect. */
   private accuseObjects: GameObjects.Image[] = [];
@@ -264,6 +301,7 @@ export class DetectiveScene extends Scene {
     });
     SUSPECTS.forEach((c) => svg(c.key, c.file));
     svg(NOTEBOOK.key, NOTEBOOK.file);
+    svg(SUSPECT_SIGN.key, SUSPECT_SIGN.file);
     Object.values(SEARCH_CARDS).forEach((c) => svg(c.key, c.file));
     svg(NOTEBOOK_ROW.key, NOTEBOOK_ROW.file);
     svg(ACCUSE_SIGN.key, ACCUSE_SIGN.file);
@@ -302,6 +340,8 @@ export class DetectiveScene extends Scene {
     this.notebookCount = undefined;
     this.foundCount = 0;
     this.caughtCount = 0;
+    this.suspectSign = undefined;
+    this.foldTimer = undefined;
     this.accuseObjects = [];
     this.wrongObjects = [];
     this.hoverClue = undefined;
@@ -553,7 +593,8 @@ export class DetectiveScene extends Scene {
       image.setScale(def.width / image.width);
       // Remember the normal size and spot (the clue grows a bit under the glass).
       image.setData('scale', image.scale).setData('bounds', image.getBounds());
-      popIn(this, image, { delay: 600 });
+      // Hidden until the magnifying glass comes near.
+      image.setAlpha(0);
       this.searchObjects.push(image);
       return { def, image, found: false };
     });
@@ -567,6 +608,7 @@ export class DetectiveScene extends Scene {
     this.walkQueue = this.suspects.slice();
 
     this.addNotebook();
+    this.addSuspectSign();
     this.addCursorTools();
 
     this.time.delayedCall(1000, () => {
@@ -593,11 +635,19 @@ export class DetectiveScene extends Scene {
   // Search: clues (player 1)
   // ---------------------------------------------------------------------------
 
-  /** The clue under the glass grows a little (a click by player 1 then finds it). */
+  /**
+   * Clues only show under the glass (fading in as it comes near). The clue right
+   * under it grows a little (a click by player 1 then finds it).
+   */
   private searchClues(glass: { x: number; y: number }) {
-    const under = this.clues.find(
-      (c) => !c.found && distanceToRect(glass, c.image.getData('bounds') as Geom.Rectangle) <= CLUE_HOVER.distance,
-    );
+    const { full, none } = CLUE_HOVER.reveal;
+    let under: ClueState | undefined;
+    for (const clue of this.clues) {
+      if (clue.found) continue;
+      const distance = distanceToRect(glass, clue.image.getData('bounds') as Geom.Rectangle);
+      clue.image.setAlpha(PMath.Clamp((none - distance) / (none - full), 0, 1));
+      if (distance <= CLUE_HOVER.distance && !under) under = clue;
+    }
     if (under === this.hoverClue) return;
     if (under) this.showSearchCard('p1');
     for (const clue of [this.hoverClue, under]) {
@@ -845,29 +895,89 @@ export class DetectiveScene extends Scene {
     // Behind a bookcase: only the part next to it counts, not the bookcase itself.
     if (suspect.behind && this.bookcaseImages().some((b) => b.getBounds().contains(point.x, point.y))) return;
 
-    // Caught! He goes to the row at the bottom.
+    // Caught! The sign folds out and he goes into his slot on it.
     this.hideSearchCard('p2');
     suspect.caught = true;
     this.tweens.killTweensOf(suspect.image);
     this.walking = undefined;
-    const i = this.caughtCount++;
+    this.caughtCount++;
     const { image } = suspect;
-    image.setDepth(DEPTH.caught).setFlipX(false);
+    image.setDepth(DEPTH.caught + 1).setFlipX(false);
     suspect.behind = false;
+
+    this.openSuspectSign();
+    const slot = this.suspectSlot(suspect.def.key);
+    const height = SUSPECT_SIGN.slotHeight * SUSPECT_SIGN.height * SUSPECT_SIGN.scale;
     this.tweens.add({
       targets: image,
-      x: CAUGHT_ROW.x + i * CAUGHT_ROW.gap,
-      y: CAUGHT_ROW.y,
-      scale: CAUGHT_ROW.height / image.height,
+      x: slot.x,
+      // The image's origin is at his feet.
+      y: slot.y + height / 2,
+      scale: height / image.height,
       angle: 0,
-      duration: 700,
-      ease: 'Back.InOut',
+      duration: 750,
+      delay: 200,
+      ease: 'Cubic.InOut',
       onComplete: () => {
-        swing(this, image, 6);
+        // He becomes part of the sign (in colour, over his silhouette).
+        image.setVisible(false);
+        this.fillSlot(suspect.def.key);
         this.checkSearchDone();
       },
     });
     this.time.delayedCall(WALK.pause, () => this.walkNext());
+  }
+
+  /** The "Verdachtes" sign on the left: folded away, only the label sticks out. */
+  private addSuspectSign() {
+    const S = SUSPECT_SIGN;
+    const image = this.add.image(0, 0, S.key).setOrigin(0, 0);
+    image.setScale(S.width / image.width);
+    this.suspectSign = this.add
+      .container(-S.width * S.scale, S.y, [image])
+      .setScale(S.scale)
+      .setDepth(DEPTH.caught);
+    // Slides in, folded away.
+    this.tweens.add({ targets: this.suspectSign, x: this.foldedX(), delay: 700, duration: 600, ease: 'Back.Out' });
+    this.searchObjects.push(this.suspectSign);
+  }
+
+  private foldedX(): number {
+    return SUSPECT_SIGN.x - SUSPECT_SIGN.foldedOffset * SUSPECT_SIGN.width * SUSPECT_SIGN.scale;
+  }
+
+  /** Fold the sign out, and fold it away again a moment after the last catch. */
+  private openSuspectSign() {
+    const sign = this.suspectSign;
+    if (!sign) return;
+    this.tweens.killTweensOf(sign);
+    this.tweens.add({ targets: sign, x: SUSPECT_SIGN.x, duration: 400, ease: 'Back.Out' });
+    this.foldTimer?.remove();
+    this.foldTimer = this.time.delayedCall(SUSPECT_SIGN.openTime + 950, () => {
+      this.tweens.add({ targets: sign, x: this.foldedX(), duration: 450, ease: 'Cubic.In' });
+    });
+  }
+
+  /** Where a suspect's slot is on screen, with the sign open. */
+  private suspectSlot(key: string): { x: number; y: number } {
+    const S = SUSPECT_SIGN;
+    const slot = S.slots[key];
+    return { x: S.x + slot.x * S.width * S.scale, y: S.y + slot.y * S.height * S.scale };
+  }
+
+  /** Put the caught suspect, in colour, in his slot (over his silhouette). */
+  private fillSlot(key: string) {
+    const S = SUSPECT_SIGN;
+    const sign = this.suspectSign;
+    const slot = S.slots[key];
+    if (!sign || !slot) return;
+    const x = slot.x * S.width;
+    const y = slot.y * S.height;
+    const cover = this.add.rectangle(x, y, S.slotWidth * S.width, S.slotHeight * S.height, S.board);
+    const figure = this.add.image(x, y, key);
+    figure.setScale(Math.min((S.slotWidth * S.width * 0.95) / figure.width, (S.slotHeight * S.height * 0.95) / figure.height));
+    sign.add([cover, figure]);
+    popIn(this, figure);
   }
 
   private bookcaseImages(): GameObjects.Image[] {
