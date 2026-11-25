@@ -14,8 +14,6 @@ export interface Point {
 export interface SpellDef {
   /** Shown above the shape while it has to be traced (\n = new line). */
   name: string;
-  /** Shouted when the spell is cast (\n = new line). */
-  shout: string;
   /**
    * What the spell does:
    * - star: a magic star flies to the witch
@@ -54,7 +52,6 @@ function wave(waves: number, height: number, steps: number): Point[] {
 export const SPELLS: SpellDef[] = [
   {
     name: 'Expelliarmus',
-    shout: 'Expelliarmus!',
     effect: 'star',
     // A lightning bolt from top to bottom.
     shape: [
@@ -66,7 +63,6 @@ export const SPELLS: SpellDef[] = [
   },
   {
     name: 'Expecto Patronum',
-    shout: 'Expecto Patronum!',
     effect: 'rabbit',
     // A wave, from left to right.
     shape: wave(1.5, 0.45, 30),
@@ -74,14 +70,12 @@ export const SPELLS: SpellDef[] = [
   {
     // The Golden Cap spell from The Wizard of Oz: one spell in three parts.
     name: 'Ep-pe, pep-pe, kak-ke!\nHil-lo, hol-lo, hel-lo!\nZiz-zy, zuz-zy, zik!',
-    shout: 'Ep-pe, pep-pe, kak-ke!\nHil-lo, hol-lo, hel-lo!\nZiz-zy, zuz-zy, zik!',
     effect: 'monkeys',
     // A full circle, starting at the top, going right (clockwise).
     shape: arc(-90, 270, 28),
   },
   {
     name: 'Toverdrank!',
-    shout: 'Toverdrank!',
     effect: 'potion',
     // Throwing a potion: a big arch from bottom left over the top to bottom right.
     shape: arc(180, 360, 20, 0.85, 0.85).map((p) => ({ x: p.x, y: p.y + 0.4 })),

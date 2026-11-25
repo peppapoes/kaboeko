@@ -3,7 +3,7 @@ import { GAME_HEIGHT, GAME_WIDTH, RENDER_SCALE, setupCamera } from '../config';
 import { inputManager } from '../input/InputManager';
 import { dropIn, popIn, riseIn, setRestAngle, sinkOut, slideIn, slideOut } from '../puppet';
 import { PlayerPointers } from '../playerPointers';
-import { addPressButtonText } from '../ui';
+import { addStartButton, preloadStartButton } from '../ui';
 import { placeShape, resample, SPELLS, SpellTrace, type SpellDef } from './fantasySpells';
 
 /*
@@ -50,17 +50,17 @@ const PROP_SPOTS = {
   },
   // Each prop on the inner corner of its player's card: umbrella (player 1) left, wand (player 2) right.
   intro: {
-    umbrella: { x: 590, y: 690, height: 230, angle: -15 },
-    wand: { x: 1300, y: 640, height: 280, angle: 20 },
+    umbrella: { x: 640, y: 600, height: 210, angle: -15 },
+    wand: { x: 1245, y: 600, height: 260, angle: 20 },
   },
 };
 
-/** Cards and the intro sign stand with the end of their stick well below the screen. */
-const CARD_BOTTOM_Y = GAME_HEIGHT + 110;
 /** How far (degrees) the cards lean towards the outside of the screen. */
 const CARD_LEAN = 5;
-/** "druk op een knop om het spel te starten" in the intro, at the bottom between the cards. */
-const PRESS_TEXT_Y = 1150;
+/** "Druk op een knop om te starten" (the brown button, like geschiedenis), at the bottom between the cards. */
+const START_BUTTON = { x: GAME_WIDTH / 2, y: 1140, width: 755 };
+/** The intro cards stand a bit higher than the end of their stick, like in geschiedenis. */
+const INTRO_CARD_BOTTOM_Y = GAME_HEIGHT + 30;
 
 /**
  * The two player cards. The card images are the geschiedenis cards without
@@ -73,28 +73,31 @@ const CARDS = {
   p1: {
     key: 'fantasy-card-p1',
     file: 'speler1-stap1.svg',
-    svgWidth: 548,
-    svgHeight: 782,
+    svgWidth: 598,
+    svgHeight: 864,
     x: 395,
-    scale: 0.9,
-    lean: 5.5,
-    angle: 4.1,
+    scale: 0.885,
+    lean: -5,
+    angle: -4,
     color: '#2B69B4',
-    role: { text: 'Jij beschermt!', x: 284, y: 150 },
-    hint: { text: 'richt je paraplu en druk op de knop', x: 277, y: 258 },
+    role: { text: 'Jij beschermt!', x: 277, y: 177 },
+    /** Small drawing between the title and the explanation (see drawCardIcon). */
+    icon: { kind: 'target' as CardIcon, x: 281, y: 236 },
+    hint: { text: 'Hou je paraplu open\nop de blauwe cirkel', x: 286, y: 280 },
   },
   p2: {
     key: 'fantasy-card-p2',
     file: 'speler2-stap1.svg',
-    svgWidth: 653,
-    svgHeight: 957,
-    x: 1480,
-    scale: 0.89,
-    lean: -1.8,
-    angle: -5,
+    svgWidth: 593,
+    svgHeight: 877,
+    x: 1525,
+    scale: 0.885,
+    lean: 5,
+    angle: 6.4,
     color: '#D23636',
-    role: { text: 'Jij tovert!', x: 277, y: 203 },
-    hint: { text: 'zwaai je toverstaf heen en weer', x: 287, y: 318 },
+    role: { text: 'Jij tovert!', x: 298, y: 188 },
+    icon: { kind: 'spell' as CardIcon, x: 292, y: 243 },
+    hint: { text: 'Doe de spreuk na\nmet je toverstaf', x: 286, y: 289 },
   },
 };
 
@@ -239,7 +242,12 @@ const SPELL = {
   /** How close (px) the tip of the wand has to come to a dot: bigger = easier. */
   hitRadius: 75,
 };
-const SPELL_COLOR = 0xffd84a;
+/** The players' colours: player 1 (umbrella) blue, player 2 (wand, spells) red. */
+const PLAYER_COLOR = { p1: 0x2b69b4, p2: 0xd23636 };
+/** The spell movement (start dot, the part already done) is in player 2's colour. */
+const SPELL_COLOR = PLAYER_COLOR.p2;
+/** Dark outline around text in the game, so it can be read on any background. */
+const TEXT_OUTLINE = { color: '#03314E', thickness: 10 };
 /** Expecto Patronum: the glowing rabbit (size = width on screen, alpha = how see-through, hops on its way). */
 const PATRONUS = { size: 260, alpha: 0.85, runTime: 1300, hops: 3 };
 /** The Golden Cap spell: how many flying monkeys attack the witch, and the time between them. */
@@ -249,6 +257,9 @@ const MONKEY_SPELL = { count: 3, gap: 220, size: 170 };
 const SPARK_KEY = 'fantasy-spark';
 const HEART_KEY = 'fantasy-heart';
 const PATRONUS_KEY = 'fantasy-patronus';
+const ICON_KEYS = { target: 'fantasy-icon-target', spell: 'fantasy-icon-spell' };
+/** Size of the line drawings on the player cards (1 = as drawn). */
+const CARD_ICON_SIZE = 0.85;
 const CLOUD_KEY = 'fantasy-cloud';
 
 /** Draw order (higher = on top). */
@@ -271,6 +282,8 @@ const DEPTH = {
 
 type State = 'title' | 'titleReady' | 'intro' | 'introReady' | 'busy' | 'playing' | 'bookReady' | 'done';
 type AttackKind = 'monkey' | 'potion';
+/** Small drawings on the player cards: the red landing circle, or a spell movement to copy. */
+type CardIcon = 'target' | 'spell';
 
 /** An attack of the witch that is on its way. */
 interface Attack {
@@ -302,7 +315,7 @@ export class FantasyScene extends Scene {
   private introUmbrella?: GameObjects.Image;
   /** Cards and sign of the intro. */
   private introObjects: GameObjects.Container[] = [];
-  private introPress?: GameObjects.Text;
+  private introPress?: GameObjects.Image;
   /** The players' hands, on the title and intro (while playing, the wand and umbrella are the cursor). */
   private pointers!: PlayerPointers;
   private backButton?: GameObjects.Image;
@@ -365,6 +378,7 @@ export class FantasyScene extends Scene {
     // Shared with the geschiedenis game.
     this.load.image('fantasy-back', 'assets/minigame-geschiedenis/back-button.png');
     PlayerPointers.preload(this);
+    preloadStartButton(this);
   }
 
   create() {
@@ -606,11 +620,11 @@ export class FantasyScene extends Scene {
     riseIn(this, cardP1, { delay: 550 });
     this.introObjects = [sign, cardP2, cardP1];
 
-    // "druk op een knop om het spel te starten" just above the sign.
-    void addPressButtonText(this, GAME_WIDTH / 2, PRESS_TEXT_Y, { depth: DEPTH.card, delay: 900 }).then((press) => {
-      if (!press) return;
-      if (this.state === 'intro' || this.state === 'introReady') this.introPress = press;
-      else press.destroy();
+    // The brown "Druk op een knop om te starten" button, like geschiedenis.
+    this.introPress = addStartButton(this, START_BUTTON.x, START_BUTTON.y, {
+      width: START_BUTTON.width,
+      depth: DEPTH.card,
+      delay: 900,
     });
 
     this.time.delayedCall(1400, () => {
@@ -627,35 +641,55 @@ export class FantasyScene extends Scene {
       y: (p.y - card.svgHeight) * card.scale,
     });
 
+    // Same font as the geschiedenis cards (Andika).
     const role = at(card.role);
     const roleText = this.add
       .text(role.x, role.y, card.role.text, {
-        fontFamily: 'Oswald',
-        fontStyle: '500',
-        fontSize: `${Math.round(36 * card.scale)}px`,
+        fontFamily: SIGN_FONT,
+        fontStyle: '700',
+        fontSize: `${Math.round(38 * card.scale)}px`,
         color: '#03314E',
         resolution: RENDER_SCALE,
       })
       .setOrigin(0.5)
       .setAngle(card.angle);
+
+    const iconAt = at(card.icon);
+    const icon = this.drawCardIcon(card.icon.kind, card.scale).setPosition(iconAt.x, iconAt.y).setAngle(card.angle);
+
+    // The explanation may take two lines: it starts at hint.y and goes down.
     const hint = at(card.hint);
     const hintText = this.add
       .text(hint.x, hint.y, card.hint.text, {
-        fontFamily: 'Oswald',
-        fontStyle: '500',
-        fontSize: `${Math.round(22 * card.scale)}px`,
+        fontFamily: SIGN_FONT,
+        fontStyle: '700',
+        fontSize: `${Math.round(24 * card.scale)}px`,
         color: card.color,
+        align: 'center',
+        wordWrap: { width: 380 * card.scale },
         resolution: RENDER_SCALE,
       })
-      .setOrigin(0.5)
+      .setOrigin(0.5, 0)
       .setAngle(card.angle);
 
-    const container = this.add.container(card.x, CARD_BOTTOM_Y, [image, roleText, hintText]).setDepth(DEPTH.card);
-    // Cards lean towards the outside of the screen: left cards to the left, right cards to the right.
+    const container = this.add
+      .container(card.x, INTRO_CARD_BOTTOM_Y, [image, roleText, icon, hintText])
+      .setDepth(DEPTH.card);
+    // Cards lean towards the outside of the screen; `card.lean` is how much the drawing already leans.
     const side = card.x < GAME_WIDTH / 2 ? -1 : 1;
     setRestAngle(container, side * CARD_LEAN - card.lean);
     return container;
   }
+
+  /**
+   * The small line drawing on a player card, in the style of the arrows on
+   * the geschiedenis cards (thick rounded lines in the player's colour).
+   */
+  private drawCardIcon(kind: CardIcon, scale: number): GameObjects.Image {
+    const key = kind === 'target' ? ICON_KEYS.target : ICON_KEYS.spell;
+    return this.add.image(0, 0, key).setScale((scale * CARD_ICON_SIZE) / RENDER_SCALE);
+  }
+
 
   /** The big wooden sign (the goal of the game, or the end). */
   private makeSign(heading = SIGN.title.text, body = SIGN.text.text): GameObjects.Container {
@@ -920,17 +954,28 @@ export class FantasyScene extends Scene {
     const trace = new SpellTrace(dots, SPELL.hitRadius);
 
     const backdrop = this.add.circle(0, 0, SPELL_AREA.size * 0.72, 0x03314e, 0.6);
+    // The name on a dark label with a red border (player 2's colour), so it can be read while playing.
     const name = this.add
-      .text(0, -SPELL_AREA.size * 0.72 - 14, spell.name, {
-        fontFamily: 'Oswald',
-        fontStyle: '600',
-        fontSize: '40px',
+      .text(0, -SPELL_AREA.size * 0.72 - 30, spell.name, {
+        fontFamily: SIGN_FONT,
+        fontStyle: '700',
+        fontSize: '36px',
         color: '#ffffff',
         align: 'center',
+        lineSpacing: 2,
         resolution: RENDER_SCALE,
       })
       // Bottom-center: a name of more lines grows upwards.
       .setOrigin(0.5, 1);
+    const pad = { x: 28, y: 12 };
+    const labelW = name.width + pad.x * 2;
+    const labelH = name.height + pad.y * 2;
+    const label = this.add
+      .graphics()
+      .fillStyle(0x03314e, 0.92)
+      .fillRoundedRect(-labelW / 2, name.y - name.height - pad.y, labelW, labelH, Math.min(28, labelH / 2))
+      .lineStyle(5, PLAYER_COLOR.p2, 1)
+      .strokeRoundedRect(-labelW / 2, name.y - name.height - pad.y, labelW, labelH, Math.min(28, labelH / 2));
     const local = dots.map((d) => ({ x: d.x - SPELL_AREA.x, y: d.y - SPELL_AREA.y }));
     const dotsGraphics = this.add.graphics();
     dotsGraphics.fillStyle(0xffffff, 0.75);
@@ -944,17 +989,19 @@ export class FantasyScene extends Scene {
     // "Wait": shown while the umbrella is open.
     const lock = this.add
       .text(0, 0, 'Wacht!\nDe paraplu is open', {
-        fontFamily: 'Oswald',
-        fontStyle: '600',
+        fontFamily: SIGN_FONT,
+        fontStyle: '700',
         fontSize: '40px',
         color: '#ffffff',
+        stroke: TEXT_OUTLINE.color,
+        strokeThickness: TEXT_OUTLINE.thickness,
         align: 'center',
         resolution: RENDER_SCALE,
       })
       .setOrigin(0.5);
 
     const view = this.add
-      .container(SPELL_AREA.x, SPELL_AREA.y, [backdrop, name, dotsGraphics, traced, start, lock])
+      .container(SPELL_AREA.x, SPELL_AREA.y, [backdrop, label, name, dotsGraphics, traced, start, lock])
       .setDepth(DEPTH.spell);
     popIn(this, view);
     this.spell = { def: spell, trace, view, traced, start, local, lock };
@@ -1008,14 +1055,13 @@ export class FantasyScene extends Scene {
     g.fillStyle(0xffffff, 0.9).fillTriangle(tip.x, tip.y, left.x, left.y, right.x, right.y);
   }
 
-  /** The movement is done: shout the spell and fire it at the witch. */
+  /** The movement is done: fire the spell at the witch (its name was already on the label, so no shout). */
   private castSpell() {
     const spell = this.spell;
     if (!spell) return;
     this.spell = undefined;
     this.tweens.add({ targets: spell.view, alpha: 0, scale: 1.15, duration: 350, onComplete: () => spell.view.destroy() });
 
-    this.shout(spell.def.shout, SPELL_AREA.x, SPELL_AREA.y - SPELL_AREA.size * 0.72 - 60, '#FFD84A');
 
     const from = { x: this.wandAt.x, y: this.wandAt.y };
     const target = this.witchChest();
@@ -1229,7 +1275,15 @@ export class FantasyScene extends Scene {
   private launchAttack(kind: AttackKind, from: { x: number; y: number }, target: { x: number; y: number }) {
     // Where it will land: a red circle on the floor, so player 1 knows where to hold the umbrella.
     const marker = this.add.graphics().setDepth(DEPTH.marker).setPosition(target.x, target.y);
-    marker.fillStyle(0xd23636, 0.25).fillEllipse(0, 0, 220, 90).lineStyle(6, 0xd23636, 0.9).strokeEllipse(0, 0, 220, 90);
+    // In player 1's colour (blue): it's player 1 who has to go there.
+    // A white border around it (like the stickers), so it stands out on the dark floor.
+    marker
+      .fillStyle(PLAYER_COLOR.p1, 0.45)
+      .fillEllipse(0, 0, 220, 90)
+      .lineStyle(16, 0xffffff, 1)
+      .strokeEllipse(0, 0, 220, 90)
+      .lineStyle(8, PLAYER_COLOR.p1, 1)
+      .strokeEllipse(0, 0, 220, 90);
     this.tweens.add({ targets: marker, scale: { from: 0.85, to: 1.1 }, duration: 400, yoyo: true, repeat: -1 });
 
     const key = kind === 'monkey' ? 'fantasy-monkey' : 'fantasy-potion';
@@ -1273,7 +1327,7 @@ export class FantasyScene extends Scene {
     attack.blocked = true;
     attack.tween?.remove();
     attack.marker.destroy();
-    this.shout('Teruggekaatst!', attack.sprite.x, attack.sprite.y - 120, '#A8E4F0');
+    this.shout('Teruggekaatst!', attack.sprite.x, attack.sprite.y - 120, '#FFFFFF', '#2B69B4');
 
     // The umbrella gets a little push.
     this.tweens.add({ targets: this.umbrellaOpen, angle: { from: -12, to: 0 }, duration: 500, ease: 'Elastic.Out' });
@@ -1304,7 +1358,7 @@ export class FantasyScene extends Scene {
       this.tweens.add({ targets: sprite, x: away, y: sprite.y - 400, duration: 900, ease: 'Quad.In', onComplete: () => sprite.destroy() });
     }
     // The witch laughs and gets some health back.
-    if (this.state === 'playing') this.shout('Hihihi!', WITCH.x, WITCH.bottomY - 800, '#C9A8FF');
+    if (this.state === 'playing') this.shout('Hihihi!', WITCH.x, WITCH.bottomY - 800, '#FFFFFF', '#6A3FB5');
     this.healWitch(HEAL_ON_MISS);
     this.endAttack(attack);
   }
@@ -1556,6 +1610,55 @@ export class FantasyScene extends Scene {
         texture.refresh();
       }
     }
+    // The line drawings on the player cards (see drawCardIcon).
+    const lineIcon = (key: string, width: number, height: number, color: string, draw: (ctx: CanvasRenderingContext2D) => void) => {
+      if (this.textures.exists(key)) return;
+      const texture = this.textures.createCanvas(key, width * RENDER_SCALE, height * RENDER_SCALE);
+      const ctx = texture?.getContext();
+      if (!texture || !ctx) return;
+      ctx.scale(RENDER_SCALE, RENDER_SCALE);
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 6.7;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      draw(ctx);
+      texture.refresh();
+    };
+    const arrowHead = (ctx: CanvasRenderingContext2D, x: number, y: number, angle: number) => {
+      ctx.beginPath();
+      for (const side of [-1, 1]) {
+        ctx.moveTo(x, y);
+        ctx.lineTo(x - Math.cos(angle + side * 0.6) * 18, y - Math.sin(angle + side * 0.6) * 18);
+      }
+      ctx.stroke();
+    };
+    // Player 1: an arrow coming down onto a circle on the floor (where the attack lands).
+    lineIcon(ICON_KEYS.target, 180, 84, '#2B69B4', (ctx) => {
+      ctx.beginPath();
+      ctx.ellipse(90, 58, 70, 20, 0, 0, Math.PI * 2);
+      ctx.stroke();
+      // The arrow a bit darker than the circle.
+      ctx.strokeStyle = '#1A4380';
+      ctx.beginPath();
+      ctx.moveTo(90, 6);
+      ctx.lineTo(90, 44);
+      ctx.stroke();
+      arrowHead(ctx, 90, 46, Math.PI / 2);
+    });
+    // Player 2: a wavy arrow (follow the movement of the spell).
+    lineIcon(ICON_KEYS.spell, 200, 80, '#D23636', (ctx) => {
+      ctx.beginPath();
+      for (let i = 0; i <= 40; i++) {
+        const x = 12 + (165 * i) / 40;
+        const y = 40 - Math.sin((i / 40) * Math.PI * 2) * 20;
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+      // The wave ends going up again: the arrow points along it.
+      arrowHead(ctx, 178, 40, -Math.atan2(20 * Math.PI * 2, 165) );
+    });
+
     if (!this.textures.exists(HEART_KEY)) {
       const size = HEALTH_BAR.heartSize * RENDER_SCALE;
       const texture = this.textures.createCanvas(HEART_KEY, size, size);
@@ -1577,7 +1680,8 @@ export class FantasyScene extends Scene {
   }
 
   /** Text that pops up, floats up a bit and disappears. */
-  private shout(text: string, x: number, y: number, color: string) {
+  /** Big text that pops up: `color` = the letters, `outline` = a thick border around them (readable on anything). */
+  private shout(text: string, x: number, y: number, color: string, outline = TEXT_OUTLINE.color) {
     // Text of more lines (a long spell) is a bit smaller.
     const lines = text.split('\n').length;
     const label = this.add
@@ -1586,6 +1690,8 @@ export class FantasyScene extends Scene {
         fontStyle: '700',
         fontSize: lines > 1 ? '46px' : '56px',
         color,
+        stroke: outline,
+        strokeThickness: TEXT_OUTLINE.thickness,
         align: 'center',
         resolution: RENDER_SCALE,
       })
@@ -1655,7 +1761,7 @@ export class FantasyScene extends Scene {
     });
 
     this.burst(x, y);
-    this.shout('POEF!', x, y - 40, '#5B3FA0');
+    this.shout('POEF!', x, y - 40, '#FFFFFF', '#6A3FB5');
 
     // Then the clouds shrink away one by one, with a few stars.
     this.time.delayedCall(WITCH_END.cloudTime - 500, onDissolve);
