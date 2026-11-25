@@ -58,7 +58,7 @@ const GENRES: Genre[] = [
   { key: 'menu-genre-grappig', file: 'grappig.svg', scene: 'KomedieScene', x: 537, labelY: 658, svgStringX: 323.5, svgLabelY: 1054, svgBookY: 1345 },
   { key: 'menu-genre-mystery', file: 'mystery.svg', scene: 'DetectiveScene', x: 847, labelY: 238, svgStringX: 434.5, svgLabelY: 745, svgBookY: 1011 },
   { key: 'menu-genre-adventure', file: 'adventure.svg', x: 1230, labelY: 468, svgStringX: 206.5, svgLabelY: 1179, svgBookY: 1441 },
-  { key: 'menu-genre-fantasy', file: 'fantasy.svg', x: 1604, labelY: 256, svgStringX: 148.5, svgLabelY: 728, svgBookY: 1025 },
+  { key: 'menu-genre-fantasy', file: 'fantasy.svg', scene: 'FantasyScene', x: 1604, labelY: 256, svgStringX: 148.5, svgLabelY: 728, svgBookY: 1025 },
 ];
 
 /** How much bigger a book gets while a hand is over it (1.05 = 5%). */

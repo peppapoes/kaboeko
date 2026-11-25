@@ -5,6 +5,7 @@ import { DetectiveScene } from './scenes/DetectiveScene';
 import { KomedieScene } from './scenes/KomedieScene';
 import { GeschiedenisScene } from './scenes/GeschiedenisScene';
 import { MenuScene } from './scenes/MenuScene';
+import { FantasyScene } from './scenes/FantasyScene';
 
 const config: Types.Core.GameConfig = {
   type: AUTO,
@@ -20,7 +21,7 @@ const config: Types.Core.GameConfig = {
     height: GAME_HEIGHT * RENDER_SCALE,
   },
   // The first scene in the list starts first.
-  scene: [MenuScene, GeschiedenisScene, DetectiveScene, KomedieScene],
+  scene: [MenuScene, GeschiedenisScene, DetectiveScene, KomedieScene, FantasyScene],
 };
 
 const game = new Game(config);
