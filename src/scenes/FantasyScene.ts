@@ -223,16 +223,26 @@ const ATTACK = {
   flyTime: 3200,
   /** Where attacks can land (the floor in front of the witch). */
   targetArea: { x: 200, y: 860, width: 1520, height: 260 },
-  /** How close (px) the attack has to come to the middle of the open umbrella to bounce back. */
+  /**
+   * When the attack arrives, the open umbrella has to be on the circle: at most
+   * this far (px) from its middle. Only then it bounces back (not earlier in the air).
+   */
   blockRadius: 150,
-  /** The umbrella only catches the attack in the last part of its flight (0..1). */
-  blockFrom: 0.45,
+  /** After bouncing an attack back, the umbrella closes by itself after this many ms. */
+  closeAfterBounce: 600,
   monkeySize: 230,
   potionSize: 140,
 };
 
-/** Where the movement for a spell is shown (center and size, game pixels). */
-const SPELL_AREA = { x: 1520, y: 600, size: 360 };
+/** Where the movement for a spell is shown: the wand has to follow its dots. */
+const SPELL_AREA = {
+  /** Middle of the movement on screen, and its size (game pixels). */
+  x: 1520,
+  y: 600,
+  size: 360,
+  /** The dark circle behind the movement, as a part of `size`. */
+  backdrop: 0.72,
+};
 const SPELL = {
   /** First spell this many ms after the game starts; the next one this long after casting. */
   firstDelay: 1500,
@@ -291,7 +301,6 @@ interface Attack {
   sprite: GameObjects.Image;
   marker: GameObjects.Graphics;
   tween?: Tweens.Tween;
-  blocked: boolean;
 }
 
 /** The spell the wizard is tracing now. */
@@ -944,19 +953,19 @@ export class FantasyScene extends Scene {
 
   /** Show a new movement to copy (never the same one twice in a row). */
   private showNextSpell() {
-    if (this.state !== 'playing') return;
+    // Only one spell at a time.
+    if (this.state !== 'playing' || this.spell) return;
     const options = SPELLS.filter((spell) => spell !== this.lastSpell);
     const spell = options[PMath.Between(0, options.length - 1)];
     this.lastSpell = spell;
 
-    const line = placeShape(spell.shape, SPELL_AREA.x, SPELL_AREA.y, SPELL_AREA.size);
-    const dots = resample(line, SPELL.dotSpacing);
-    const trace = new SpellTrace(dots, SPELL.hitRadius);
+    // The dots around (0, 0), the middle of the example.
+    const local = resample(placeShape(spell.shape, 0, 0, SPELL_AREA.size), SPELL.dotSpacing);
 
-    const backdrop = this.add.circle(0, 0, SPELL_AREA.size * 0.72, 0x03314e, 0.6);
+    const backdrop = this.add.circle(0, 0, SPELL_AREA.size * SPELL_AREA.backdrop, 0x03314e, 0.5);
     // The name on a dark label with a red border (player 2's colour), so it can be read while playing.
     const name = this.add
-      .text(0, -SPELL_AREA.size * 0.72 - 30, spell.name, {
+      .text(0, -SPELL_AREA.size * SPELL_AREA.backdrop - 30, spell.name, {
         fontFamily: SIGN_FONT,
         fontStyle: '700',
         fontSize: '36px',
@@ -976,10 +985,9 @@ export class FantasyScene extends Scene {
       .fillRoundedRect(-labelW / 2, name.y - name.height - pad.y, labelW, labelH, Math.min(28, labelH / 2))
       .lineStyle(5, PLAYER_COLOR.p2, 1)
       .strokeRoundedRect(-labelW / 2, name.y - name.height - pad.y, labelW, labelH, Math.min(28, labelH / 2));
-    const local = dots.map((d) => ({ x: d.x - SPELL_AREA.x, y: d.y - SPELL_AREA.y }));
+    // White dots with a dark edge, so they show on any background.
     const dotsGraphics = this.add.graphics();
-    dotsGraphics.fillStyle(0xffffff, 0.75);
-    local.forEach((d) => dotsGraphics.fillCircle(d.x, d.y, 7));
+    local.forEach((d) => dotsGraphics.fillStyle(0x03314e, 0.9).fillCircle(d.x, d.y, 10).fillStyle(0xffffff, 1).fillCircle(d.x, d.y, 7));
     this.drawArrowHead(dotsGraphics, local[local.length - 2], local[local.length - 1]);
     const traced = this.add.graphics();
     // Where to start: a pulsing yellow circle.
@@ -1003,8 +1011,13 @@ export class FantasyScene extends Scene {
     const view = this.add
       .container(SPELL_AREA.x, SPELL_AREA.y, [backdrop, label, name, dotsGraphics, traced, start, lock])
       .setDepth(DEPTH.spell);
-    popIn(this, view);
+    // The wand has to follow the dots where they are on screen.
+    const trace = new SpellTrace(
+      local.map((d) => ({ x: d.x + SPELL_AREA.x, y: d.y + SPELL_AREA.y })),
+      SPELL.hitRadius,
+    );
     this.spell = { def: spell, trace, view, traced, start, local, lock };
+    popIn(this, view);
     this.updateSpellLock();
   }
 
@@ -1014,16 +1027,19 @@ export class FantasyScene extends Scene {
     // While the umbrella is open, the wizard has to wait.
     if (!spell || this.state !== 'playing' || this.isUmbrellaOpen || !spell.trace.feed(from, to)) return;
 
-    // Draw the part that has been done in yellow.
+    // Draw the part that has been done in red.
     const done = spell.local.slice(0, spell.trace.reached);
-    spell.traced.clear().lineStyle(16, SPELL_COLOR, 1);
-    if (done.length > 1) {
-      spell.traced.beginPath().moveTo(done[0].x, done[0].y);
-      done.slice(1).forEach((d) => spell.traced.lineTo(d.x, d.y));
-      spell.traced.strokePath();
+    spell.traced.clear();
+    spell.start.setVisible(done.length === 0);
+    if (done.length > 0) {
+      spell.traced.lineStyle(16, SPELL_COLOR, 1);
+      if (done.length > 1) {
+        spell.traced.beginPath().moveTo(done[0].x, done[0].y);
+        done.slice(1).forEach((d) => spell.traced.lineTo(d.x, d.y));
+        spell.traced.strokePath();
+      }
+      spell.traced.fillStyle(SPELL_COLOR, 1).fillCircle(done[done.length - 1].x, done[done.length - 1].y, 14);
     }
-    spell.traced.fillStyle(SPELL_COLOR, 1).fillCircle(done[done.length - 1].x, done[done.length - 1].y, 14);
-    spell.start.setVisible(false);
 
     if (spell.trace.done) this.castSpell();
   }
@@ -1290,10 +1306,13 @@ export class FantasyScene extends Scene {
     const sprite = this.add.image(from.x, from.y, key).setDepth(DEPTH.projectile);
     const size = kind === 'monkey' ? ATTACK.monkeySize : ATTACK.potionSize;
     const fullScale = size / Math.max(sprite.width, sprite.height);
+    // Start small right away: otherwise it shows at the size of the image file for
+    // one frame (before the flight sets its size), which looks like a flash.
+    sprite.setScale(fullScale * 0.45);
     // The monkey looks to the left in the drawing: flip it when it flies to the right.
     if (kind === 'monkey') sprite.setFlipX(target.x > from.x);
 
-    const attack: Attack = { kind, sprite, marker, tween: undefined, blocked: false };
+    const attack: Attack = { kind, sprite, marker, tween: undefined };
     this.attack = attack;
 
     // Flies in an arch towards the players, getting bigger (it comes closer).
@@ -1309,28 +1328,31 @@ export class FantasyScene extends Scene {
         const flap = kind === 'monkey' ? 1 + Math.sin(p * 40) * 0.08 : 1;
         sprite.setScale(fullScale * (0.45 + 0.55 * p), fullScale * (0.45 + 0.55 * p) * flap);
         if (kind === 'potion') sprite.angle = p * 540;
-        if (p > ATTACK.blockFrom && this.umbrellaBlocks(sprite.x, sprite.y)) this.bounceBack(attack);
       },
+      // Only when it arrives: is the open umbrella on the circle?
       onComplete: () => {
-        if (!attack.blocked) this.attackLands(attack);
+        if (this.umbrellaBlocks(target.x, target.y)) this.bounceBack(attack);
+        else this.attackLands(attack);
       },
     });
   }
 
-  /** Is the open umbrella in the way at this point? */
+  /** Is the open umbrella on this spot (the circle where the attack lands)? */
   private umbrellaBlocks(x: number, y: number) {
     return this.isUmbrellaOpen && PMath.Distance.Between(x, y, this.umbrellaAt.x, this.umbrellaAt.y) < ATTACK.blockRadius;
   }
 
   /** Player 1 caught it with the umbrella: it bounces back to the witch. */
   private bounceBack(attack: Attack) {
-    attack.blocked = true;
     attack.tween?.remove();
     attack.marker.destroy();
     this.shout('Teruggekaatst!', attack.sprite.x, attack.sprite.y - 120, '#FFFFFF', '#2B69B4');
 
-    // The umbrella gets a little push.
+    // The umbrella gets a little push, and then closes by itself.
     this.tweens.add({ targets: this.umbrellaOpen, angle: { from: -12, to: 0 }, duration: 500, ease: 'Elastic.Out' });
+    this.time.delayedCall(ATTACK.closeAfterBounce, () => {
+      if (this.state === 'playing' && this.isUmbrellaOpen) this.toggleUmbrella();
+    });
 
     const target = this.witchChest();
     const sprite = attack.sprite;
