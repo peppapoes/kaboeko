@@ -65,10 +65,11 @@ De Arduino-sketch staat in `hardware/kaboeko_mpu6050/`.
   controllerknop (of spatie) klapt de paraplu open of dicht.
   De heks gooit vliegende apen en gifflesjes; een rode cirkel toont waar ze
   landen. Houdt speler 1 daar de open paraplu, dan kaatst de aanval terug naar
-  de heks. Speler 2 trekt met de toverstaf de stippellijn van een spreuk na
+  de heks. Mist de paraplu, dan krijgt de heks wat leven terug. Speler 2 trekt met de toverstaf de stippellijn van een spreuk na
   (geel = start); dan vuurt de spreuk op de heks. Zolang de paraplu open is,
   kan speler 2 geen spreuk doen ("Wacht! De paraplu is open"). Elke treffer laat haar
-  levensbalk zakken; bij nul is het spel gewonnen.
+  levensbalk zakken. Bij nul verdwijnt de heks in rook, komt het
+  fantasieboek tevoorschijn. Een knop of klik opent het boek (zoals bij geschiedenis).
   **Testen zonder controller:** speler 1 speelt dan met het toetsenbord:
   `WASD` (of de pijltjes) beweegt de paraplu, `Spatie`/`Enter` is de knop
   (paraplu open/dicht, verder naar de volgende stap). Speler 2 blijft op de
