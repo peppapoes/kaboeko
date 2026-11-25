@@ -58,6 +58,23 @@ De Arduino-sketch staat in `hardware/kaboeko_mpu6050/`.
   debugpaneel resetten, `Spatie` = knop van speler 1.
 - **Genrescherm:** twee handjes. Speler 1 = controller (+ spatie om te kiezen),
   speler 2 = muis (gewoon klikken).
+- **Fantasiescherm:** de titel *Fantasie* en de twee bewegende props verdwijnen
+  vanzelf. Daarna verschijnen de spelersuitleg en het houten bord met het
+  speldoel. De handjes blijven zichtbaar tot de intro wordt aangeklikt. Daarna
+  heeft speler 1 (controller) de paraplu en speler 2 (muis) de toverstaf. De
+  controllerknop (of spatie) klapt de paraplu open of dicht.
+  De heks gooit vliegende apen en gifflesjes; een rode cirkel toont waar ze
+  landen. Houdt speler 1 daar de open paraplu, dan kaatst de aanval terug naar
+  de heks. Speler 2 trekt met de toverstaf de stippellijn van een spreuk na
+  (geel = start); dan vuurt de spreuk op de heks. Zolang de paraplu open is,
+  kan speler 2 geen spreuk doen ("Wacht! De paraplu is open"). Elke treffer laat haar
+  levensbalk zakken; bij nul is het spel gewonnen.
+  **Testen zonder controller:** speler 1 speelt dan met het toetsenbord:
+  `WASD` (of de pijltjes) beweegt de paraplu, `Spatie`/`Enter` is de knop
+  (paraplu open/dicht, verder naar de volgende stap). Speler 2 blijft op de
+  muis/trackpad. Tijdens het spel opent `D` dan dus niet het debugpaneel.
+  Spreuken staan in `src/scenes/fantasySpells.ts`, moeilijkheid bovenaan
+  `FantasyScene.ts` (`ATTACK`, `SPELL`, `DAMAGE`).
 - **Overal anders:** één cursor. Met controller volgt die de controller en
   telt een trackpadklik op de plek van de controllercursor.
 
