@@ -47,3 +47,37 @@ export async function addPressButtonText(
   });
   return text;
 }
+
+const START_BUTTON = { key: 'ui-press-to-start', file: 'assets/general/drukomtestarten.svg' };
+
+/** Load the "Druk op een knop om te starten" button image. Call in preload(). */
+export function preloadStartButton(scene: Scene) {
+  scene.load.svg(START_BUTTON.key, START_BUTTON.file, { scale: RENDER_SCALE });
+}
+
+/**
+ * The brown "Druk op een knop om te starten" button (an image, not clickable),
+ * gently pulsing so it draws attention.
+ */
+export function addStartButton(
+  scene: Scene,
+  x: number,
+  y: number,
+  options: { width?: number; depth?: number; delay?: number } = {},
+): GameObjects.Image {
+  const { width = 760, depth = 0, delay = 0 } = options;
+  const image = scene.add.image(x, y, START_BUTTON.key).setDepth(depth);
+  const scale = width / image.width;
+  image.setScale(0);
+  scene.tweens.add({ targets: image, scale, delay, duration: 450, ease: 'Back.Out' });
+  scene.tweens.add({
+    targets: image,
+    scale: scale * 1.05,
+    delay: delay + 500,
+    duration: 700,
+    yoyo: true,
+    repeat: -1,
+    ease: 'Sine.InOut',
+  });
+  return image;
+}

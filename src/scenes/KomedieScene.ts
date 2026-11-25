@@ -97,6 +97,8 @@ export class KomedieScene extends Scene {
     // The players' hands as the cursor.
     this.pointers = new PlayerPointers(this);
     this.pointers.show();
+    // Title and explanation: both players' hands (player 1 controller, player 2 mouse).
+    inputManager.setSplit(this);
 
     this.addBackButton();
 
@@ -201,7 +203,7 @@ export class KomedieScene extends Scene {
         .setOrigin(0.5, 1)
         .setScale(card.scale / RENDER_SCALE)
         .setDepth(DEPTH.content);
-      riseIn(this, image, { delay: 550 + i * 150 });
+      riseIn(this, image, { delay: 550 + i * 150, gentle: true });
     }
 
     void addPressButtonText(this, GAME_WIDTH / 2, PRESS_TEXT_Y, { depth: DEPTH.content, delay: 900 });

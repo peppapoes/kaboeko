@@ -67,6 +67,8 @@ export class ControllerUI {
   private flashTimer?: number;
   private mode: InputMode = 'mouse';
   private split = false;
+  /** Which controller player 1 uses, shown in the label. */
+  private controllerName = 'controller';
 
   constructor(onConnect: () => void, serialSupported: boolean) {
     const style = document.createElement('style');
@@ -176,9 +178,16 @@ export class ControllerUI {
     if (visible) element.style.transform = `translate(${left}px, ${top}px)`;
   }
 
+  /** Show which controller is used ('mpu' or 'nunchuk'). */
+  setControllerType(type: 'mpu' | 'nunchuk') {
+    this.controllerName = type === 'nunchuk' ? 'Nunchuk' : 'MPU-6050';
+    this.showLabel();
+  }
+
   private showLabel(extra?: string) {
-    let text = this.mode === 'tilt' ? '🎮 controller' : '🖱 mouse';
-    if (this.split) text = this.mode === 'tilt' ? '🎮 P1 controller · 🖱 P2 mouse' : '🖱 P2 mouse (no controller)';
+    const name = this.controllerName;
+    let text = this.mode === 'tilt' ? `🎮 ${name}` : '🖱 mouse';
+    if (this.split) text = this.mode === 'tilt' ? `🎮 P1 ${name} · 🖱 P2 mouse` : '🖱 P2 mouse (no controller)';
     this.label.textContent = extra ? `${text} · ${extra}` : text;
   }
 }

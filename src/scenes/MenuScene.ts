@@ -110,6 +110,8 @@ export class MenuScene extends Scene {
     // The players' hands instead of the mouse cursor, in the whole menu (the mouse is player 2).
     this.pointers = new PlayerPointers(this);
     this.pointers.show();
+    // Two players in the whole menu: player 1 with the controller, player 2 with the mouse.
+    inputManager.setSplit(this);
 
     this.add.image(0, 0, 'menu-background').setOrigin(0).setDisplaySize(GAME_WIDTH, GAME_HEIGHT).setDepth(DEPTH.background);
     this.addPaperEdges();
@@ -259,8 +261,6 @@ export class MenuScene extends Scene {
     this.time.delayedCall(700, () => {
       this.state = 'genres';
       this.restartIdleTimer();
-      // Both players choose: player 1 with the controller (+ Space), player 2 with the mouse.
-      inputManager.setSplit(this);
     });
   }
 
@@ -311,7 +311,6 @@ export class MenuScene extends Scene {
   private backToTitle() {
     this.state = 'busy';
     this.idleTimer?.remove();
-    inputManager.setSplit(null);
 
     // The books are pulled up on their strings, the sign goes down.
     const books = this.genreBooks;
