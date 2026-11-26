@@ -69,6 +69,8 @@ export class ControllerUI {
   private split = false;
   /** Which controller player 1 uses, shown in the label. */
   private controllerName = 'controller';
+  /** Which controller player 2 uses, while it is in use (else player 2 is the mouse). */
+  private player2Name?: string;
 
   constructor(onConnect: () => void, serialSupported: boolean) {
     const style = document.createElement('style');
@@ -122,9 +124,10 @@ export class ControllerUI {
     this.showLabel();
   }
 
-  /** Hide the connect button while at least one controller is connected. */
+  /** The connect button stays until both controllers are connected. */
   setConnected(count: number) {
-    this.button.style.display = count > 0 ? 'none' : '';
+    this.button.style.display = count >= 2 ? 'none' : '';
+    this.button.textContent = count === 1 ? 'Connect controller 2' : 'Connect controller';
   }
 
   /** Show a short message next to the mode for a moment. */
@@ -178,16 +181,21 @@ export class ControllerUI {
     if (visible) element.style.transform = `translate(${left}px, ${top}px)`;
   }
 
-  /** Show which controller is used ('mpu' or 'nunchuk'). */
-  setControllerType(type: 'mpu' | 'nunchuk') {
-    this.controllerName = type === 'nunchuk' ? 'Nunchuk' : 'MPU-6050';
+  /** Show which controller a player uses ('mpu' or 'nunchuk'); undefined = player 2 has none (any more). */
+  setControllerType(type: 'mpu' | 'nunchuk' | undefined, player: number = 1) {
+    const name = type === 'nunchuk' ? 'Nunchuk' : type === 'mpu' ? 'MPU-6050' : undefined;
+    if (player === 2) this.player2Name = name;
+    else if (name) this.controllerName = name;
     this.showLabel();
   }
 
   private showLabel(extra?: string) {
     const name = this.controllerName;
+    const p2 = this.player2Name ? `🎮 P2 ${this.player2Name}` : '🖱 P2 mouse';
     let text = this.mode === 'tilt' ? `🎮 ${name}` : '🖱 mouse';
-    if (this.split) text = this.mode === 'tilt' ? `🎮 P1 ${name} · 🖱 P2 mouse` : '🖱 P2 mouse (no controller)';
+    if (this.split || this.player2Name) {
+      text = this.mode === 'tilt' ? `🎮 P1 ${name} · ${p2}` : this.player2Name ? `P1 no controller · ${p2}` : '🖱 P2 mouse (no controller)';
+    }
     this.label.textContent = extra ? `${text} · ${extra}` : text;
   }
 }
