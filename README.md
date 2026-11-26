@@ -53,6 +53,14 @@ De Arduino-sketch staat in `hardware/kaboeko_mpu6050/`.
 - **Verbinden:** klik rechtsboven op *Connect controller* en kies de poort.
   Daarna verbindt de game vanzelf opnieuw bij het laden of opnieuw insteken.
   Sluit de Serial Monitor van de Arduino IDE, anders is de poort bezet.
+- **Twee controllers:** klik daarna op *Connect controller 2* en kies de
+  tweede poort. De controller die het eerst verbonden is, wordt speler 1, de
+  andere speler 2 (ook als beide sketches `PLAYER = 1` hebben; zet je in een
+  sketch `PLAYER = 2`, dan is die altijd speler 2). Het label rechtsboven toont
+  wie wat heeft. Speler 2 is in de game "de muis": de controller van speler 2
+  neemt de muis over (bewegen en klikken met de knop), dus elke scene werkt er
+  meteen mee. Zolang die controller verbonden is, beweegt de echte muis
+  speler 2 niet; een muisklik telt dan op de plek van de controller van speler 2.
 - **Toetsen:** `C` = huidige stand wordt het midden (kalibreren), `T` = wisselen
   tussen muis en controller, `D` = debugpaneel, `R` = min/max in het
   debugpaneel resetten, `Spatie` = knop van speler 1.
