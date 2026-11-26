@@ -266,8 +266,11 @@ const QUOTE = {
   file: 'quote.svg',
   svgWidth: 782,
   svgHeight: 358,
-  /** Width on screen. */
+  /** Width on screen; a spell of 3 lines (De tovenaar van Oz) gets a bigger card, so the text has room. */
   width: 540,
+  widthLong: 700,
+  /** The bigger card sits a bit lower (overlaps the circle more), so it stays clear of the health bar. */
+  overlapLong: 100,
   /** Left/right of the middle of the movement, and how far it overlaps the dark circle (px). */
   x: -20,
   overlap: 55,
@@ -275,10 +278,8 @@ const QUOTE = {
   angle: -7.3,
   text: { x: 392, y: 175 },
 };
-/** Dark outline around text in the game, so it can be read on any background. */
-const TEXT_OUTLINE = { color: '#03314E', thickness: 10 };
-/** Expecto Patronum: the deer (size = width on screen, alpha = how see-through, hops on its way). */
-const PATRONUS = { size: 260, alpha: 0.85, runTime: 1300, hops: 3 };
+/** Expecto Patronum: the deer (size = width on screen, alpha = how see-through, runTime = ms to reach the witch). */
+const PATRONUS = { size: 260, alpha: 0.85, runTime: 1100 };
 /** The Golden Cap spell: how many flying monkeys attack the witch, and the time between them. */
 const MONKEY_SPELL = { count: 3, gap: 220, size: 170 };
 
@@ -317,7 +318,6 @@ const DEPTH = {
   spell: 6,
   hud: 8,
   players: 10,
-  shout: 12,
   smoke: 11,
   backButton: 14,
   card: 15,
@@ -738,7 +738,6 @@ export class FantasyScene extends Scene {
     return this.add.image(0, 0, key).setScale((scale * CARD_ICON_SIZE) / RENDER_SCALE);
   }
 
-
   /** The big wooden sign (the goal of the game, or the end). */
   private makeSign(heading = SIGN.title.text, body = SIGN.text.text): GameObjects.Container {
     // Upside down, so the post points up (the container's origin is the end of the post).
@@ -865,7 +864,6 @@ export class FantasyScene extends Scene {
     for (const prop of [this.umbrellaOpen, this.umbrellaClosed, this.wand, this.umbrellaBadge, this.wandBadge]) {
       popIn(this, prop, { delay: 300 });
     }
-
 
     this.time.delayedCall(SPELL.firstDelay, () => this.showNextSpell());
     this.time.delayedCall(ATTACK.firstDelay, () => this.witchAttack());
@@ -1004,7 +1002,9 @@ export class FantasyScene extends Scene {
     const backdrop = this.add.circle(0, 0, SPELL_AREA.size * SPELL_AREA.backdrop, 0x03314e, 0.5);
     // Above the movement: a quote card (like in geschiedenis) with the spell's words and where they come from.
     const quote = this.makeQuoteCard(spell);
-    quote.setPosition(QUOTE.x, -SPELL_AREA.size * SPELL_AREA.backdrop - (QUOTE.svgHeight * QUOTE.width) / QUOTE.svgWidth / 2 + QUOTE.overlap);
+    const quoteHeight = (QUOTE.svgHeight * this.quoteWidth(spell)) / QUOTE.svgWidth;
+    const overlap = this.quoteWidth(spell) === QUOTE.widthLong ? QUOTE.overlapLong : QUOTE.overlap;
+    quote.setPosition(QUOTE.x, -SPELL_AREA.size * SPELL_AREA.backdrop - quoteHeight / 2 + overlap);
     // White dots with a dark edge, so they show on any background.
     const dotsGraphics = this.add.graphics();
     local.forEach((d) => dotsGraphics.fillStyle(0x03314e, 0.9).fillCircle(d.x, d.y, 10).fillStyle(0xffffff, 1).fillCircle(d.x, d.y, 7));
@@ -1014,15 +1014,13 @@ export class FantasyScene extends Scene {
     const start = this.add.circle(local[0].x, local[0].y, 26, SPELL_COLOR, 0.9);
     this.tweens.add({ targets: start, scale: { from: 0.8, to: 1.3 }, alpha: { from: 1, to: 0.5 }, duration: 600, yoyo: true, repeat: -1 });
 
-    // "Wait": shown while the umbrella is open.
+    // "Wait": shown while the umbrella is open. Just white text in our font.
     const lock = this.add
       .text(0, 0, 'Wacht!\nDe paraplu is open', {
         fontFamily: SIGN_FONT,
         fontStyle: '700',
-        fontSize: '40px',
-        color: '#ffffff',
-        stroke: TEXT_OUTLINE.color,
-        strokeThickness: TEXT_OUTLINE.thickness,
+        fontSize: '38px',
+        color: '#FFFFFF',
         align: 'center',
         resolution: RENDER_SCALE,
       })
@@ -1081,9 +1079,14 @@ export class FantasyScene extends Scene {
     spell.start.setVisible(!locked && spell.trace.reached === 0);
   }
 
+  /** How wide the quote card of a spell is: bigger for a long spell. */
+  private quoteWidth(spell: SpellDef): number {
+    return spell.name.split('\n').length >= 3 ? QUOTE.widthLong : QUOTE.width;
+  }
+
   /** The quote card: the spell's words, and where they come from (e.g. "Harry Potter"). */
   private makeQuoteCard(spell: SpellDef): GameObjects.Container {
-    const scale = QUOTE.width / QUOTE.svgWidth;
+    const scale = this.quoteWidth(spell) / QUOTE.svgWidth;
     const card = this.add.image(0, 0, QUOTE.key).setScale(scale / RENDER_SCALE);
     // SVG pixels -> position on the card (whose middle is 0, 0).
     const at = (p: { x: number; y: number }) => ({
@@ -1095,7 +1098,8 @@ export class FantasyScene extends Scene {
       .text(0, 0, spell.name, {
         fontFamily: 'Oswald',
         fontStyle: '700',
-        fontSize: lines > 1 ? '27px' : '44px',
+        // More lines (a longer spell) = smaller letters, so it fits on the paper.
+        fontSize: lines >= 3 ? '30px' : lines === 2 ? '36px' : '44px',
         color: '#03314E',
         align: 'center',
         lineSpacing: -2,
@@ -1125,7 +1129,6 @@ export class FantasyScene extends Scene {
     return this.add.container(0, 0, [card, words, source]);
   }
 
-
   private drawArrowHead(g: GameObjects.Graphics, from: { x: number; y: number }, to: { x: number; y: number }) {
     const angle = Math.atan2(to.y - from.y, to.x - from.x);
     const size = 30;
@@ -1136,7 +1139,7 @@ export class FantasyScene extends Scene {
     g.fillStyle(0xffffff, 0.9).fillTriangle(tip.x, tip.y, left.x, left.y, right.x, right.y);
   }
 
-  /** The movement is done: fire the spell at the witch (its name was already on the label, so no shout). */
+  /** The movement is done: fire the spell at the witch. */
   private castSpell() {
     const spell = this.spell;
     if (!spell) return;
@@ -1184,7 +1187,7 @@ export class FantasyScene extends Scene {
     }
   }
 
-  /** Expecto Patronum: a light, a bit see-through deer (hert.svg) leaps from the wand to the witch. */
+  /** Expecto Patronum: a light, a bit see-through deer (hert.svg) goes from the wand straight to the witch. */
   private patronus(from: { x: number; y: number }, target: { x: number; y: number }, onHit: () => void) {
     const deer = this.add
       .image(from.x, from.y - 80, PATRONUS_KEY)
@@ -1194,23 +1197,15 @@ export class FantasyScene extends Scene {
     const scale = PATRONUS.size / (deer.width / RENDER_SCALE) / RENDER_SCALE;
     // It appears out of the wand...
     this.tweens.add({ targets: deer, alpha: PATRONUS.alpha, scale, duration: 450, ease: 'Back.Out' });
-    // ...and hops to the witch in a few big jumps, leaving a trail of light.
+    // ...and goes straight to the witch, leaving a trail of light.
     const trail = this.time.addEvent({ delay: 45, loop: true, callback: () => this.sparkle(deer.x, deer.y + 60) });
-    const start = { x: deer.x, y: deer.y };
-    this.tweens.addCounter({
-      from: 0,
-      to: 1,
+    this.tweens.add({
+      targets: deer,
+      x: target.x,
+      y: target.y,
       delay: 350,
       duration: PATRONUS.runTime,
-      onUpdate: (t) => {
-        const p = t.getValue() ?? 0;
-        const hop = Math.abs(Math.sin(p * Math.PI * PATRONUS.hops));
-        deer.x = start.x + (target.x - start.x) * p;
-        deer.y = start.y + (target.y - start.y) * p - hop * 90;
-        // Squashed a little when it lands, stretched in the air.
-        deer.setScale(scale * (1 + (hop - 0.5) * 0.08), scale * (1 + (0.5 - hop) * 0.08 + hop * 0.06));
-        deer.angle = Math.cos(p * Math.PI * PATRONUS.hops) * 8;
-      },
+      ease: 'Sine.InOut',
       onComplete: () => {
         trail.remove();
         onHit();
@@ -1446,7 +1441,6 @@ export class FantasyScene extends Scene {
   private bounceBack(attack: Attack) {
     attack.tween?.remove();
     attack.marker.destroy();
-    this.shout('Teruggekaatst!', attack.sprite.x, attack.sprite.y - 120, '#FFFFFF', '#2B69B4');
 
     // The umbrella gets a little push, and then closes by itself.
     this.tweens.add({ targets: this.umbrellaOpen, angle: { from: -12, to: 0 }, duration: 500, ease: 'Elastic.Out' });
@@ -1480,7 +1474,6 @@ export class FantasyScene extends Scene {
       this.tweens.add({ targets: sprite, x: away, y: sprite.y - 400, duration: 900, ease: 'Quad.In', onComplete: () => sprite.destroy() });
     }
     // The witch laughs and gets some health back.
-    if (this.state === 'playing') this.shout('Hihihi!', WITCH.x, WITCH.bottomY - 800, '#FFFFFF', '#6A3FB5');
     this.healWitch(HEAL_ON_MISS);
     this.endAttack(attack);
   }
@@ -1601,7 +1594,6 @@ export class FantasyScene extends Scene {
     this.backButton?.setDepth(DEPTH.book + 2);
   }
 
-
   // ---------------------------------------------------------------------------
   // Effects
   // ---------------------------------------------------------------------------
@@ -1695,11 +1687,12 @@ export class FantasyScene extends Scene {
     };
     // Player 1: an arrow coming down onto a circle on the floor (where the attack lands).
     lineIcon(ICON_KEYS.target, 180, 84, '#2B69B4', (ctx) => {
+      // The circle in our light blue (like the umbrella and the deer), the arrow in blue.
+      ctx.strokeStyle = '#A7E6F1';
       ctx.beginPath();
       ctx.ellipse(90, 58, 70, 20, 0, 0, Math.PI * 2);
       ctx.stroke();
-      // The arrow a bit darker than the circle.
-      ctx.strokeStyle = '#1A4380';
+      ctx.strokeStyle = '#2B69B4';
       ctx.beginPath();
       ctx.moveTo(90, 6);
       ctx.lineTo(90, 44);
@@ -1741,37 +1734,6 @@ export class FantasyScene extends Scene {
   }
 
   /** Text that pops up, floats up a bit and disappears. */
-  /** Big text that pops up: `color` = the letters, `outline` = a thick border around them (readable on anything). */
-  private shout(text: string, x: number, y: number, color: string, outline = TEXT_OUTLINE.color) {
-    // Text of more lines (a long spell) is a bit smaller.
-    const lines = text.split('\n').length;
-    const label = this.add
-      .text(x, y, text, {
-        fontFamily: 'Oswald',
-        fontStyle: '700',
-        fontSize: lines > 1 ? '46px' : '56px',
-        color,
-        stroke: outline,
-        strokeThickness: TEXT_OUTLINE.thickness,
-        align: 'center',
-        resolution: RENDER_SCALE,
-      })
-      .setOrigin(0.5)
-      .setDepth(DEPTH.shout);
-    // Always fully on screen.
-    label.x = PMath.Clamp(x, label.width / 2 + 20, GAME_WIDTH - label.width / 2 - 20);
-    label.y = Math.max(y, label.height / 2 + 20);
-    this.tweens.add({ targets: label, scale: { from: 0, to: 1 }, duration: 400, ease: 'Back.Out' });
-    this.tweens.add({
-      targets: label,
-      y: label.y - 70,
-      alpha: 0,
-      delay: 900 + (lines - 1) * 600,
-      duration: 500,
-      onComplete: () => label.destroy(),
-    });
-  }
-
   /** Stars flying out from a point (a hit). */
   private burst(x: number, y: number) {
     for (let i = 0; i < 10; i++) {
@@ -1794,7 +1756,7 @@ export class FantasyScene extends Scene {
   }
 
   /**
-   * Cartoon "poef": clouds pop up one after the other (with a POEF! and stars),
+   * Cartoon "poef": clouds pop up one after the other (with a burst of stars),
    * stay a moment, then shrink away one by one. `onDissolve` is called just
    * before they go, so something can appear behind them.
    */
@@ -1822,7 +1784,6 @@ export class FantasyScene extends Scene {
     });
 
     this.burst(x, y);
-    this.shout('POEF!', x, y - 40, '#FFFFFF', '#6A3FB5');
 
     // Then the clouds shrink away one by one, with a few stars.
     this.time.delayedCall(WITCH_END.cloudTime - 500, onDissolve);
