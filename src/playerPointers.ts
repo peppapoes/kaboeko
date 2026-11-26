@@ -1,4 +1,4 @@
-import type { GameObjects, Input, Scene } from 'phaser';
+import { TintModes, type GameObjects, type Input, type Scene } from 'phaser';
 import { RENDER_SCALE } from './config';
 import { inputManager } from './input/InputManager';
 
@@ -36,6 +36,37 @@ export const MOUSE_PLAYER: PlayerNumber = 2;
 const CONTROLLER_PLAYER: PlayerNumber = 1;
 /** Draw the hands on top of everything. */
 const DEPTH = 1000;
+/**
+ * Drop shadow under the hands, like the shadows in the art (the menu book and ribbon):
+ * a black, see-through copy, a bit to the bottom right (game pixels).
+ */
+const SHADOW = { dx: 6, dy: 6, alpha: 0.25 };
+
+/** A drop shadow for a hand image: same picture, black and see-through, a bit to the bottom right, just behind it. */
+function makeShadow(scene: Scene, hand: GameObjects.Image): GameObjects.Image {
+  return scene.add
+    .image(hand.x + SHADOW.dx, hand.y + SHADOW.dy, hand.texture.key)
+    .setOrigin(hand.originX, hand.originY)
+    .setScale(hand.scaleX, hand.scaleY)
+    .setAngle(hand.angle)
+    .setTint(0x000000)
+    .setTintMode(TintModes.FILL)
+    .setAlpha(SHADOW.alpha)
+    .setDepth(hand.depth - 0.01)
+    .setVisible(hand.visible);
+}
+
+/**
+ * A player's hand as a picture in a scene (e.g. pointing at something), with its drop shadow.
+ * Move, scale, rotate or tween the returned container, not the hand inside it: the shadow then
+ * stays to the bottom right however the hand is turned.
+ */
+export function addHandImage(scene: Scene, player: PlayerNumber, x: number, y: number, height: number, angle = 0) {
+  const hand = scene.add.image(0, 0, textureKey(player)).setAngle(angle);
+  hand.setScale(height / hand.height);
+  const shadow = makeShadow(scene, hand).setPosition(SHADOW.dx, SHADOW.dy);
+  return scene.add.container(x, y, [shadow, hand]);
+}
 
 export class PlayerPointers {
   static preload(scene: Scene) {
@@ -47,6 +78,7 @@ export class PlayerPointers {
   }
 
   private readonly hands: Record<PlayerNumber, GameObjects.Image>;
+  private readonly shadows: Record<PlayerNumber, GameObjects.Image>;
   private visible = false;
   /** Has the (mouse) pointer been over the game since show()? (Before that we don't know where it is.) */
   private pointerSeen = false;
@@ -62,6 +94,7 @@ export class PlayerPointers {
         .setDepth(DEPTH)
         .setVisible(false);
     this.hands = { 1: make(1), 2: make(2) };
+    this.shadows = { 1: makeShadow(scene, this.hands[1]), 2: makeShadow(scene, this.hands[2]) };
 
     scene.input.on('pointermove', this.onPointerMove, this);
     scene.events.on('update', this.refresh, this);
@@ -121,9 +154,14 @@ export class PlayerPointers {
 
     for (const player of [1, 2] as const) {
       const hand = this.hands[player];
+      const shadow = this.shadows[player];
       const at = show[player];
       hand.setVisible(this.visible && !!at);
-      if (at) hand.setPosition(at.x, at.y);
+      shadow.setVisible(hand.visible);
+      if (at) {
+        hand.setPosition(at.x, at.y);
+        shadow.setPosition(at.x + SHADOW.dx, at.y + SHADOW.dy);
+      }
     }
   }
 }
