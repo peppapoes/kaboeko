@@ -147,8 +147,8 @@ const OBSTACLES: ObstacleDef[] = [
   { key: 'av-rock1', file: 'background/steen01.svg', originX: 294 / 599, originY: 790 / 801, halfWidth: 170, sunk: 90, bob: 0 },
   { key: 'av-rock2', file: 'background/steen02.svg', originX: 262 / 535, originY: 1011 / 1022, halfWidth: 140, sunk: 90, bob: 0 },
   { key: 'av-rock3', file: 'background/steen03.svg', originX: 207 / 424, originY: 1045 / 1056, halfWidth: 120, sunk: 90, bob: 0 },
-  { key: 'av-whale', file: 'obstakels/walvis.svg', originX: 335 / 679, originY: 549 / 676, halfWidth: 190, sunk: 40, bob: 22, keepBottomHidden: true },
-  { key: 'av-croc', file: 'obstakels/tik-tok-krokodil.svg', originX: 252 / 512, originY: 616 / 641, halfWidth: 160, sunk: 85, bob: 22, keepBottomHidden: true },
+  { key: 'av-whale', file: 'obstakels/walvis.svg', originX: 335 / 679, originY: 549 / 676, halfWidth: 190, sunk: 20, bob: 22, keepBottomHidden: true },
+  { key: 'av-croc', file: 'obstakels/tik-tok-krokodil.svg', originX: 252 / 512, originY: 616 / 641, halfWidth: 160, sunk: 60, bob: 22, keepBottomHidden: true },
 ];
 
 /**
