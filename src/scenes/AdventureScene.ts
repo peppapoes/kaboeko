@@ -162,15 +162,23 @@ const OBSTACLES: ObstacleDef[] = [
 const HIT_P = 0.62;
 const GONE_P = 0.84;
 
+/** How much lower than in the design the island (with chest and book) is. */
+const ISLAND_DOWN = 30;
 /** The island (with the chest on it): where its bottom middle ends up, and its size there. */
-const ISLAND = { x: d(1080), bottom: d(1313), scale: 0.945 * DESIGN, startScale: 0.1 };
+const ISLAND = { x: d(1080), bottom: d(1313) + ISLAND_DOWN, scale: 0.945 * DESIGN, startScale: 0.1 };
 /** The chest and the book, as positions in the design (bottom middle of the chest, middle of the book). */
-const CHEST = { x: d(1080), bottom: d(1017) };
-const CHEST_BOOK = { x: d(1083), y: d(575) };
+const CHEST = { x: d(1080), bottom: d(1017) + ISLAND_DOWN };
+const CHEST_BOOK = { x: d(1083), y: d(575) + ISLAND_DOWN };
 /** How far down the boat goes when we arrive at the island. */
 const ARRIVE_BOAT_DROP = d(520);
 /** How long (seconds) the island takes to come closer. */
-const ARRIVE_TIME = 7;
+const ARRIVE_TIME = 5;
+/**
+ * The island comes closer between the waves, like a wave itself (0 = horizon, 1 = off the screen).
+ * When it stops, the wave in front of it is always here: below the chest, over the island's bottom
+ * edge. Bigger = that wave ends up lower.
+ */
+const SHORE_WAVE_P = 0.74;
 /** The open book at the end (same as in the other games). */
 const BOOK = { y: 650, closedWidth: 600, openWidth: 1520 };
 
@@ -242,7 +250,6 @@ export class AdventureScene extends Scene {
   private time0 = 0;
   /** Sideways position of the boat in the world. */
   private boatX = 0;
-  private waveSpeed = CONFIG.WAVE_SPEED;
   /** How far the boat sits lower because of the water (smoothed). */
   private sink = 0;
   /** Extra downwards movement of the boat: when arriving at the island. */
@@ -283,6 +290,9 @@ export class AdventureScene extends Scene {
   private island?: GameObjects.Container;
   private chest?: GameObjects.Image;
   private arriveTime = 0;
+  /** How close the island is, and where it will stop (see SHORE_WAVE_P). */
+  private islandP = 0;
+  private islandStopP = 0;
 
   constructor() {
     super('AdventureScene');
@@ -327,7 +337,6 @@ export class AdventureScene extends Scene {
     this.state = 'sailing';
     this.time0 = 0;
     this.boatX = 0;
-    this.waveSpeed = CONFIG.WAVE_SPEED;
     this.sink = 0;
     this.boatDrop = 0;
     this.jolt = 0;
@@ -347,6 +356,7 @@ export class AdventureScene extends Scene {
     this.island = undefined;
     this.chest = undefined;
     this.arriveTime = 0;
+    this.islandP = 0;
 
     this.sea = new Sea(this);
 
@@ -446,10 +456,13 @@ export class AdventureScene extends Scene {
     this.time0 += dt;
 
     this.updateWheel(dt);
-    this.updateSea(dt);
+    // How far the waves come closer this frame. At the island they stop (the boat has arrived).
+    let waveStep = 0;
+    if (this.state === 'sailing') waveStep = CONFIG.WAVE_SPEED * dt;
+    else if (this.state === 'arriving') waveStep = this.updateArrival(dt);
+    this.updateSea(dt, waveStep);
     this.updateObstacles();
     if (this.state === 'sailing') this.updateSplashes(dt);
-    if (this.state === 'arriving') this.updateArrival(dt);
     this.updateBoat(dt);
     this.updateBucket(dt);
     this.updateHand();
@@ -463,11 +476,13 @@ export class AdventureScene extends Scene {
     return PMath.Clamp(this.wheelAngle / CONFIG.WHEEL.fullSteerAngle, -1, 1);
   }
 
-  private updateSea(dt: number) {
+  private updateSea(dt: number, waveStep: number) {
     if (this.state === 'sailing') this.boatX += this.steer() * CONFIG.STEER_SPEED * dt;
 
     // A wave that went off the screen comes up again at the back: maybe with something on it.
-    for (const wave of this.sea.update(this.waveSpeed * dt, this.boatX)) this.onNewWave(wave);
+    // At the island the waves keep rocking gently from side to side.
+    const swell = Math.sin(this.time0 * 0.8) * 30 * Math.min(this.arriveTime / ARRIVE_TIME, 1);
+    for (const wave of this.sea.update(waveStep, this.boatX + swell)) this.onNewWave(wave);
 
     // The clouds sway on their strings, and swing a bit the other way when steering.
     this.clouds.forEach((cloud, i) => {
@@ -926,24 +941,28 @@ export class AdventureScene extends Scene {
       .setScale(DESIGN / RENDER_SCALE);
     this.island = this.add.container(ISLAND.x, ISLAND.bottom, [island, this.chest]).setAlpha(0);
     this.tweens.add({ targets: this.island, alpha: 1, duration: 600 });
-    this.updateArrival(0);
+    // The waves travel as far as the island. Pick its stop so one wave ends exactly at SHORE_WAVE_P.
+    const spacing = 1 / SEA.count;
+    const gap = PMath.Wrap(SHORE_WAVE_P - this.sea.progress(0), 0, spacing);
+    this.islandStopP = SHORE_WAVE_P - spacing + PMath.Wrap(gap - SHORE_WAVE_P, 0, spacing);
+    this.placeIsland();
   }
 
-  private updateArrival(dt: number) {
-    const island = this.island;
-    if (!island) return;
+  /** The island comes closer, together with the waves. Returns how far the waves move this frame. */
+  private updateArrival(dt: number): number {
     this.arriveTime += dt;
     const t = Math.min(this.arriveTime / ARRIVE_TIME, 1);
-    const eased = PMath.Easing.Sine.InOut(t);
 
-    // From small at the horizon to its place.
-    const bottom = PMath.Linear(waveY(0.1), ISLAND.bottom, eased);
-    island.setScale(PMath.Linear(ISLAND.startScale, 1, eased)).setPosition(ISLAND.x, bottom);
-    // The waves nearer than the island's shore are in front of it (they cover its bottom edge).
-    island.setDepth(SEA.depth + PMath.Clamp((bottom - SEA.horizon) / (ISLAND.bottom - SEA.horizon), 0.05, 1) * 0.66);
+    // A smooth curve (cubic Hermite) that starts at the sailing speed, goes faster in the
+    // middle and comes to a stop at islandStopP.
+    const startSlope = CONFIG.WAVE_SPEED * ARRIVE_TIME;
+    const p = this.islandStopP * t * t * (3 - 2 * t) + startSlope * t * (1 - t) * (1 - t);
+    // The waves move exactly as far as the island, so it never passes a wave.
+    const step = Math.max(p - this.islandP, 0);
+    this.islandP += step;
+    this.placeIsland();
 
-    // The boat slows down; in the second half it sinks out of view, to show the island.
-    this.waveSpeed = CONFIG.WAVE_SPEED * PMath.Linear(1, 0.12, eased);
+    // In the second half the boat sinks out of view, to show the island.
     this.boatDrop = ARRIVE_BOAT_DROP * PMath.Easing.Sine.InOut(PMath.Clamp((t - 0.4) / 0.6, 0, 1));
 
     if (t >= 1) {
@@ -952,6 +971,21 @@ export class AdventureScene extends Scene {
       // "Open me!": the chest hops until someone presses.
       this.tweens.add({ targets: chest, angle: { from: -3, to: 3 }, duration: 110, yoyo: true, repeat: 3, loop: -1, loopDelay: 900 });
     }
+    return step;
+  }
+
+  /** Put the island where it belongs for how close it is (islandP). */
+  private placeIsland() {
+    const island = this.island;
+    if (!island) return;
+    const near = this.islandP / this.islandStopP;
+    // Its bottom stays below the top of the wave in front of it (at most one wave further).
+    const frontWave = 1 / SEA.count;
+    const hidden = PMath.Linear(60, ISLAND.bottom - waveY(this.islandStopP + frontWave), near);
+    island
+      .setScale(PMath.Linear(ISLAND.startScale, 1, Math.pow(near, 1.5)))
+      .setPosition(ISLAND.x, waveY(this.islandP + frontWave) + hidden)
+      .setDepth(SEA.depth + this.islandP);
   }
 
   // ---------------------------------------------------------------------------
