@@ -22,6 +22,15 @@ import { SerialController, type ControllerMessage } from './SerialController';
  *    controller button), which presses the object under player 1's pointer.
  *    Both players get their own pointer image. Call setSplit(null) to stop.
  *
+ * Player 2 can also use a controller (connect a second one). Player 2 is "the
+ * mouse" everywhere, so player 2's controller simply takes over the mouse
+ * pointer: it moves the pointer and its button clicks, as if the mouse did it.
+ * Scenes don't need to know. The real mouse is ignored meanwhile (a real click
+ * still counts, at player 2's controller cursor).
+ * Which controller is which player: the "p" in its messages (PLAYER in the
+ * sketch). If both controllers say the same player, the second one to connect
+ * becomes the other player, so both sketches can keep PLAYER = 1.
+ *
  * Use from anywhere:  import { inputManager } from './input/InputManager';
  *   inputManager.getCursor()        -> { x, y } of the main pointer, in game coordinates
  *   inputManager.getMode()          -> 'mouse' | 'tilt'
@@ -72,8 +81,32 @@ export interface PlayerState {
 
 /** The controller player whose tilt moves the tilt cursor. */
 const TILT_PLAYER = 1;
-/** In split mode, the mouse belongs to this player. */
+/** In split mode, the mouse belongs to this player (or player 2's controller, see above). */
 const MOUSE_PLAYER = 2;
+
+/** The players that can have a controller. */
+type ControllerPlayer = 1 | 2;
+const CONTROLLER_PLAYERS: readonly ControllerPlayer[] = [1, 2];
+
+/** Cursor movement of one controller. */
+interface Motion {
+  cursor: Point;
+  /** Rate and joystick control: current speed. */
+  velocity: Point;
+  /** Point mode: pitch/yaw (degrees from the center) after the jitter filter. */
+  held: { pitch: number; yaw: number };
+  /** Nunchuk tilt: smoothing per direction. */
+  tiltFilter: { x: OneEuroFilter; y: OneEuroFilter };
+}
+
+function newMotion(cursor: Point = { x: GAME_WIDTH / 2, y: GAME_HEIGHT / 2 }): Motion {
+  return {
+    cursor,
+    velocity: { x: 0, y: 0 },
+    held: { pitch: 0, yaw: 0 },
+    tiltFilter: { x: new OneEuroFilter(), y: new OneEuroFilter() },
+  };
+}
 
 /** One sample while waiting for the controller to be held still (star recentering). */
 interface StillSample {
@@ -105,19 +138,27 @@ class InputManager extends Events.EventEmitter {
    */
   private pointerOwner?: number;
 
+  /** Where the mouse pointer is (player 2): the real mouse, or player 2's controller cursor. */
   private mouse: Point = { x: GAME_WIDTH / 2, y: GAME_HEIGHT / 2 };
-  private cursor: Point = { x: GAME_WIDTH / 2, y: GAME_HEIGHT / 2 };
-  private velocity: Point = { x: 0, y: 0 };
+  /** Cursor movement per controller: 1 = the tilt cursor, 2 = player 2's controller. */
+  private readonly motion: Record<ControllerPlayer, Motion> = { 1: newMotion(), 2: newMotion() };
+  /** Was player 2's controller in use last frame? (To notice when it starts or stops.) */
+  private player2WasActive = false;
 
-  /** Point mode: pitch/yaw (degrees from the center) after the jitter filter. */
-  private held = { pitch: 0, yaw: 0 };
-  /** Nunchuk tilt: smoothing per direction. */
-  private tiltFilter = { x: new OneEuroFilter(), y: new OneEuroFilter() };
+  /** Player 1's tilt cursor. */
+  private get cursor(): Point {
+    return this.motion[1].cursor;
+  }
+  private set cursor(point: Point) {
+    this.motion[1].cursor = point;
+  }
+
   /** Point mode: smallest and largest pitch/yaw seen since the last reset (key R), for tuning. */
   private range = emptyRange();
-  /** Star recentering: running while set; samples of the last STILL_TIME ms. */
+  /** Star recentering: running while set; per player the samples of the last STILL_TIME ms, and who is done. */
   private recentering = false;
-  private stillSamples: StillSample[] = [];
+  private readonly stillSamples = new Map<number, StillSample[]>();
+  private readonly centered = new Set<number>();
 
   private readonly players = new Map<number, PlayerState>();
   private readonly controllers = new Set<SerialController>();
@@ -168,7 +209,7 @@ class InputManager extends Events.EventEmitter {
     return this.mode === 'tilt' && !this.splitScene ? { ...this.cursor } : { ...this.mouse };
   }
 
-  /** Position of one player's pointer (split mode: 1 = controller, 2 = mouse). */
+  /** Position of one player's pointer (split mode: 1 = controller, 2 = mouse or player 2's controller). */
   getPlayerCursor(player: number): Point {
     return player === TILT_PLAYER ? { ...this.cursor } : { ...this.mouse };
   }
@@ -213,9 +254,12 @@ class InputManager extends Events.EventEmitter {
    */
   startRecenter(scene?: Scene) {
     if (CFG.CONTROL_MODE !== 'point' || this.controllers.size === 0) return;
-    if (this.players.get(TILT_PLAYER)?.type === 'nunchuk') return;
+    // The Nunchuk can't "point at the star" (no gyro): only needed when not every controller is a Nunchuk.
+    const known = [...this.players.values()];
+    if (known.length > 0 && known.every((state) => state.type === 'nunchuk')) return;
     this.recentering = true;
-    this.stillSamples = [];
+    this.stillSamples.clear();
+    this.centered.clear();
     scene?.events.once('shutdown', () => this.stopRecenter());
   }
 
@@ -238,8 +282,12 @@ class InputManager extends Events.EventEmitter {
     }
   }
 
-  /** Player 1's button (Space for now, later the controller button). */
+  /** A player's button: player 1 = Space or the controller button, player 2 = player 2's controller button. */
   pressPlayerButton(player = TILT_PLAYER) {
+    if (player === MOUSE_PLAYER) {
+      this.pressPlayer2Button();
+      return;
+    }
     if (this.mode !== 'tilt' || player !== TILT_PLAYER) return;
     // Not this player's turn: the mouse has the pointer.
     if (!this.splitScene && this.mouseOwnsPointer()) return;
@@ -255,6 +303,32 @@ class InputManager extends Events.EventEmitter {
     this.emit('select', { ...this.cursor, player: TILT_PLAYER });
   }
 
+  /** Player 2's controller button: a mouse click at player 2's controller cursor (player 2 = the mouse). */
+  private pressPlayer2Button() {
+    if (!this.player2DrivesPointer()) return;
+    this.clickAsPlayer2();
+  }
+
+  private clickAsPlayer2(button = 0) {
+    const at = this.motion[2].cursor;
+    this.sendMouseEvent('mousedown', button, at);
+    this.sendMouseEvent('mouseup', button, at);
+    this.emit('select', { ...at, player: this.splitScene ? MOUSE_PLAYER : undefined });
+  }
+
+  /** Is player 2's controller in use (sending data, and not switched to the mouse with T)? */
+  private player2Active(): boolean {
+    return !this.preferMouse && this.isFresh(this.players.get(MOUSE_PLAYER));
+  }
+
+  /**
+   * Does player 2's controller move the mouse pointer right now? Wherever player 2 has the mouse:
+   * on two-player screens, when it is player 2's turn, and on screens without player 1's controller.
+   */
+  private player2DrivesPointer(): boolean {
+    return this.player2Active() && (!!this.splitScene || this.mouseOwnsPointer() || this.mode === 'mouse');
+  }
+
   // ---------------------------------------------------------------------------
   // Mouse
   // ---------------------------------------------------------------------------
@@ -262,6 +336,14 @@ class InputManager extends Events.EventEmitter {
   private onRealMouse = (event: MouseEvent) => {
     if (this.synthetic.has(event)) return; // our own event: let Phaser handle it
     if (event.target instanceof Element && event.target.closest(`[${UI_ATTRIBUTE}]`)) return; // our buttons
+
+    // Player 2's controller has the mouse pointer: the real mouse doesn't move it;
+    // a real click still counts, at player 2's controller cursor.
+    if (this.player2DrivesPointer()) {
+      event.stopImmediatePropagation();
+      if (event.type === 'mouseup' && event.target === this.canvas) this.clickAsPlayer2(event.button);
+      return;
+    }
 
     this.mouse = this.toGame(event.clientX, event.clientY);
     const onGame = event.target === this.canvas;
@@ -283,11 +365,11 @@ class InputManager extends Events.EventEmitter {
     }
   };
 
-  /** Send a mouse event to the canvas at the tilt cursor, as if the mouse were there. */
-  private sendMouseEvent(type: 'mousemove' | 'mousedown' | 'mouseup', button = 0) {
+  /** Send a mouse event to the canvas at a point (default: the tilt cursor), as if the mouse were there. */
+  private sendMouseEvent(type: 'mousemove' | 'mousedown' | 'mouseup', button = 0, at: Point = this.cursor) {
     const canvas = this.canvas;
     if (!canvas) return;
-    const { x, y } = this.toClient(this.cursor);
+    const { x, y } = this.toClient(at);
     const event = new MouseEvent(type, {
       bubbles: true,
       cancelable: true,
@@ -440,11 +522,11 @@ class InputManager extends Events.EventEmitter {
     if ([...this.controllers].some((c) => c.port === port)) return; // already open
 
     const controller = new SerialController(port, {
-      onMessage: (message) => this.onMessage(message),
+      onMessage: (message) => this.onMessage(message, controller),
       onClose: () => {
         this.controllers.delete(controller);
         this.ui?.setConnected(this.controllers.size);
-        this.ui?.flash('controller disconnected');
+        this.ui?.flash(controller.player ? `controller P${controller.player} disconnected` : 'controller disconnected');
       },
     });
     this.controllers.add(controller);
@@ -452,7 +534,7 @@ class InputManager extends Events.EventEmitter {
     try {
       await controller.open(CFG.BAUD_RATE);
       this.ui?.setConnected(this.controllers.size);
-      this.ui?.flash('controller connected');
+      this.ui?.flash(`controller ${this.controllers.size} connected`);
     } catch (error) {
       // E.g. the port is open in another tab or in the Arduino Serial Monitor.
       this.controllers.delete(controller);
@@ -467,7 +549,24 @@ class InputManager extends Events.EventEmitter {
     }
   }
 
-  private onMessage(message: ControllerMessage) {
+  /**
+   * Which player a controller (port) is: the "p" of its first message, unless another connected
+   * controller already is that player; then it becomes the other one (so two controllers that
+   * both say PLAYER = 1 still become player 1 and 2). Stays the same while it is connected.
+   */
+  private playerFor(controller: SerialController, wanted: unknown): ControllerPlayer | undefined {
+    if (controller.player) return controller.player;
+    if (wanted !== 1 && wanted !== 2) return undefined;
+    const taken = (player: ControllerPlayer) => [...this.controllers].some((c) => c !== controller && c.player === player);
+    const player: ControllerPlayer = taken(wanted) ? (wanted === 1 ? 2 : 1) : wanted;
+    if (taken(player)) return undefined; // already two controllers
+    controller.player = player;
+    if (player !== wanted) console.info(`[controller] says player ${wanted}, but that one is taken: it is player ${player}`);
+    this.ui?.flash(`controller = P${player}`);
+    return player;
+  }
+
+  private onMessage(message: ControllerMessage, controller: SerialController) {
     if (typeof message.info === 'string') {
       console.info('[controller]', message.info);
       return;
@@ -477,8 +576,9 @@ class InputManager extends Events.EventEmitter {
       return;
     }
 
-    const { p, x, y } = message;
-    if (typeof p !== 'number' || typeof x !== 'number' || typeof y !== 'number') return;
+    const { x, y } = message;
+    const p = this.playerFor(controller, message.p);
+    if (p === undefined || typeof x !== 'number' || typeof y !== 'number') return;
     if (!Number.isFinite(x) || !Number.isFinite(y)) return;
     const z = typeof message.z === 'number' && Number.isFinite(message.z) ? message.z : 0;
     const type: ControllerType = 'jx' in message ? 'nunchuk' : 'mpu';
@@ -499,20 +599,17 @@ class InputManager extends Events.EventEmitter {
     }
     if (state.type !== type) {
       state.type = type;
-      if (p === TILT_PLAYER) {
-        this.resetMotion();
-        this.ui?.setControllerType(type);
-        // The Nunchuk can't "point at the star" (no gyro).
-        if (type === 'nunchuk') this.stopRecenter();
-      }
+      this.resetMotion(p);
+      this.ui?.setControllerType(type, p);
+      // The Nunchuk can't "point at the star" (no gyro).
+      if (type === 'nunchuk' && this.recentering) this.finishRecenter(p);
     }
     if (freshStart) {
       setCenter(state, x, y, z);
-      if (p === TILT_PLAYER) {
-        this.preferMouse = false;
-        this.resetMotion();
-        this.ui?.setControllerType(type);
-      }
+      if (p === TILT_PLAYER) this.preferMouse = false;
+      // Player 2's controller takes over the mouse pointer where it is now.
+      this.resetMotion(p, p === MOUSE_PLAYER ? { ...this.mouse } : undefined);
+      this.ui?.setControllerType(type, p);
     }
 
     const shake = message.shake === 1;
@@ -545,34 +642,37 @@ class InputManager extends Events.EventEmitter {
     state.lastSeen = now;
 
     if (p === TILT_PLAYER && this.mode === 'mouse' && !this.preferMouse) this.setMode('tilt');
-    if (p === TILT_PLAYER && this.recentering && this.mode === 'tilt' && type === 'mpu') this.checkStill(state, now);
+    if (this.recentering && type === 'mpu' && this.controllerInUse(p) && !this.centered.has(p)) this.checkStill(state, now);
+  }
+
+  /** Is this player's controller in use right now? */
+  private controllerInUse(player: ControllerPlayer): boolean {
+    return player === TILT_PLAYER ? this.mode === 'tilt' : this.player2Active();
   }
 
   // ---------------------------------------------------------------------------
   // Star recentering ("point at the star")
   // ---------------------------------------------------------------------------
 
-  /** Recenter as soon as the controller has been (almost) still for STILL_TIME. */
+  /** Recenter a controller as soon as it has been (almost) still for STILL_TIME (each player on their own). */
   private checkStill(state: PlayerState, now: number) {
     const { STILL_TIME, STILL_TOLERANCE } = CFG.RECENTER;
+    const player = state.player as ControllerPlayer;
+    let samples = this.stillSamples.get(player) ?? [];
     const pitch = state[CFG.POINT.PITCH_AXIS];
     // Yaw relative to the first sample, unwrapped, so ±180° doesn't count as a big jump.
-    const first = this.stillSamples[0];
+    const first = samples[0];
     const yaw = first ? first.yaw + wrapDegrees(state.z - first.yaw) : state.z;
-    this.stillSamples.push({ time: now, pitch, yaw });
+    samples.push({ time: now, pitch, yaw });
 
     // Moved too much? Start counting again from here.
-    const moved = this.stillSamples.some(
-      (s) => Math.abs(s.pitch - pitch) > STILL_TOLERANCE || Math.abs(s.yaw - yaw) > STILL_TOLERANCE,
-    );
-    if (moved) {
-      this.stillSamples = [{ time: now, pitch, yaw }];
-      return;
-    }
-    if (now - this.stillSamples[0].time < STILL_TIME) return;
+    const moved = samples.some((s) => Math.abs(s.pitch - pitch) > STILL_TOLERANCE || Math.abs(s.yaw - yaw) > STILL_TOLERANCE);
+    if (moved) samples = [{ time: now, pitch, yaw }];
+    this.stillSamples.set(player, samples);
+    if (moved || now - samples[0].time < STILL_TIME) return;
 
     // Held still long enough: the average of this moment is the new center.
-    const avg = (key: 'pitch' | 'yaw') => this.stillSamples.reduce((sum, s) => sum + s[key], 0) / this.stillSamples.length;
+    const avg = (key: 'pitch' | 'yaw') => samples.reduce((sum, s) => sum + s[key], 0) / samples.length;
     const centerPitch = avg('pitch');
     setCenter(
       state,
@@ -580,21 +680,35 @@ class InputManager extends Events.EventEmitter {
       CFG.POINT.PITCH_AXIS === 'y' ? centerPitch : state.y,
       wrapDegrees(avg('yaw')),
     );
-    this.stopRecenter();
-    this.resetMotion();
-    this.ui?.flash('calibrated');
+    this.resetMotion(player);
+    this.ui?.flash(`P${player} calibrated`);
+    this.finishRecenter(player);
+  }
+
+  /** This player is done with the star; when every controller in use is done, the star goes away. */
+  private finishRecenter(player: ControllerPlayer) {
+    this.centered.add(player);
+    this.stillSamples.delete(player);
+    const waiting = CONTROLLER_PLAYERS.some(
+      (p) => this.controllerInUse(p) && this.players.get(p)?.type === 'mpu' && !this.centered.has(p),
+    );
+    if (!waiting) this.stopRecenter();
   }
 
   private stopRecenter() {
     this.recentering = false;
-    this.stillSamples = [];
+    this.stillSamples.clear();
+    this.centered.clear();
   }
 
-  /** After a new center: start the cursor movement fresh (no jump from old filter values). */
-  private resetMotion() {
-    this.velocity = { x: 0, y: 0 };
-    this.held = { pitch: 0, yaw: 0 };
-    this.tiltFilter = { x: new OneEuroFilter(), y: new OneEuroFilter() };
+  /**
+   * After a new center: start the cursor movement fresh (no jump from old filter values).
+   * One player, or both; `cursor` = where that player's cursor starts (default: where it is).
+   */
+  private resetMotion(player?: ControllerPlayer, cursor?: Point) {
+    for (const p of player ? [player] : CONTROLLER_PLAYERS) {
+      this.motion[p] = newMotion(cursor ?? this.motion[p].cursor);
+    }
   }
 
   private isFresh(state: PlayerState | undefined): state is PlayerState {
@@ -608,7 +722,7 @@ class InputManager extends Events.EventEmitter {
   private setMode(mode: InputMode) {
     if (mode === this.mode) return;
     this.mode = mode;
-    this.resetMotion();
+    this.resetMotion(TILT_PLAYER);
     if (mode === 'mouse') this.setSplitHover(undefined);
     // A running "point at the star" waits until the controller is back.
     if (mode === 'tilt' && !this.splitScene) this.sendMouseEvent('mousemove');
@@ -624,28 +738,37 @@ class InputManager extends Events.EventEmitter {
     this.lastFrame = now;
     // After a long frame (page was busy), serial data may still be waiting: don't time out yet.
     const stalled = frame > STALL_MS;
+    const dt = Math.min(frame, 100) / 1000;
 
     if (this.mode === 'tilt' && !stalled && !this.isFresh(this.players.get(TILT_PLAYER))) this.setMode('mouse');
-    if (this.mode === 'tilt') this.moveCursor(Math.min(frame, 100) / 1000);
+    if (this.mode === 'tilt') this.moveCursor(dt);
+
+    // Player 2's controller: starts or stops (not while the page was busy), and moves the mouse pointer.
+    const player2 = this.player2Active() || (stalled && this.player2WasActive);
+    if (player2 !== this.player2WasActive) {
+      this.player2WasActive = player2;
+      if (!player2) this.ui?.setControllerType(undefined, MOUSE_PLAYER);
+    }
+    if (player2) this.movePlayer2Cursor(dt);
 
     this.updatePointers();
     this.updateDebug(now);
   }
 
-  /** Move the tilt cursor (point or rate mode, see CONTROL_MODE in controllerConfig.ts). */
+  /** Where a controller wants its cursor (point or rate mode, see CONTROL_MODE in controllerConfig.ts). */
+  private targetFor(state: PlayerState, m: Motion, dt: number): Point {
+    if (state.type === 'nunchuk') {
+      return CFG.NUNCHUK_CONTROL === 'tilt' ? this.nunchukTiltTarget(state, m, dt) : this.joystickTarget(state, m, dt);
+    }
+    return CFG.CONTROL_MODE === 'point' ? this.pointTarget(state, m, dt) : this.rateTarget(state, m, dt);
+  }
+
+  /** Move the tilt cursor (player 1). */
   private moveCursor(dt: number) {
     const state = this.players.get(TILT_PLAYER);
     if (!state || dt <= 0) return;
 
-    const target =
-      state.type === 'nunchuk'
-        ? CFG.NUNCHUK_CONTROL === 'tilt'
-          ? this.nunchukTiltTarget(state, dt)
-          : this.joystickTarget(state, dt)
-        : CFG.CONTROL_MODE === 'point'
-          ? this.pointTarget(state, dt)
-          : this.rateTarget(state, dt);
-    const next = this.clamp(target);
+    const next = this.clamp(this.targetFor(state, this.motion[1], dt));
     if (Math.abs(next.x - this.cursor.x) < 0.01 && Math.abs(next.y - this.cursor.y) < 0.01) return;
     this.cursor = next;
 
@@ -658,30 +781,48 @@ class InputManager extends Events.EventEmitter {
   }
 
   /**
+   * Move player 2's controller cursor. Player 2 is the mouse, so where player 2 has the mouse,
+   * the mouse pointer goes with it (scenes see normal mouse moves).
+   */
+  private movePlayer2Cursor(dt: number) {
+    const state = this.players.get(MOUSE_PLAYER);
+    const m = this.motion[2];
+    if (!state || dt <= 0) return;
+
+    const next = this.clamp(this.targetFor(state, m, dt));
+    if (Math.abs(next.x - m.cursor.x) < 0.01 && Math.abs(next.y - m.cursor.y) < 0.01) return;
+    m.cursor = next;
+    if (!this.player2DrivesPointer()) return;
+    this.mouse = { ...next };
+    this.sendMouseEvent('mousemove', 0, next);
+  }
+
+  /**
    * Point mode, like a Wii remote: where the controller points is where the cursor goes.
    * Up/down from a tilt angle (PITCH_AXIS), left/right from the gyro rotation (z).
    */
-  private pointTarget(state: PlayerState, dt: number): Point {
+  private pointTarget(state: PlayerState, m: Motion, dt: number): Point {
     const P = CFG.POINT;
-    const { pitch, yaw } = this.pointAngles(state);
+    // Min/max for tuning are only kept for player 1.
+    const { pitch, yaw } = state.player === TILT_PLAYER ? this.pointAngles(state) : this.relativeAngles(state);
 
     // Jitter filter: quick small changes (< DEAD_ZONE) are ignored; bigger ones are followed.
     // When held still, it slowly settles on the real value, so no offset of DEAD_ZONE stays behind.
     const settle = 1 - Math.exp(-dt / JITTER_SETTLE_TIME);
-    this.held.pitch = followBeyond(this.held.pitch, pitch, P.DEAD_ZONE);
-    this.held.yaw = followBeyond(this.held.yaw, yaw, P.DEAD_ZONE);
-    this.held.pitch += (pitch - this.held.pitch) * settle;
-    this.held.yaw += (yaw - this.held.yaw) * settle;
+    m.held.pitch = followBeyond(m.held.pitch, pitch, P.DEAD_ZONE);
+    m.held.yaw = followBeyond(m.held.yaw, yaw, P.DEAD_ZONE);
+    m.held.pitch += (pitch - m.held.pitch) * settle;
+    m.held.yaw += (yaw - m.held.yaw) * settle;
 
     const target = {
-      x: GAME_WIDTH / 2 + (this.held.yaw / P.YAW_RANGE) * (GAME_WIDTH / 2),
-      y: GAME_HEIGHT / 2 - (this.held.pitch / P.PITCH_RANGE) * (GAME_HEIGHT / 2),
+      x: GAME_WIDTH / 2 + (m.held.yaw / P.YAW_RANGE) * (GAME_WIDTH / 2),
+      y: GAME_HEIGHT / 2 - (m.held.pitch / P.PITCH_RANGE) * (GAME_HEIGHT / 2),
     };
 
     const follow = P.SMOOTHING > 0 ? 1 - Math.exp(-dt / P.SMOOTHING) : 1;
     return {
-      x: this.cursor.x + (target.x - this.cursor.x) * follow,
-      y: this.cursor.y + (target.y - this.cursor.y) * follow,
+      x: m.cursor.x + (target.x - m.cursor.x) * follow,
+      y: m.cursor.y + (target.y - m.cursor.y) * follow,
     };
   }
 
@@ -709,15 +850,15 @@ class InputManager extends Events.EventEmitter {
    * Left/right from y (tilt left/right), up/down from x (tilt forward/back),
    * relative to the middle (set when the Nunchuk connects, and with key C).
    */
-  private nunchukTiltTarget(state: PlayerState, dt: number): Point {
+  private nunchukTiltTarget(state: PlayerState, m: Motion, dt: number): Point {
     const T = CFG.NUNCHUK_TILT;
     let { leftRight, forwardBack } = tiltFromCenter(state);
     if (T.INVERT_X) leftRight = -leftRight;
     if (T.INVERT_Y) forwardBack = -forwardBack;
 
     // 1-euro filter: calm when still, quick when moving.
-    const lr = this.tiltFilter.x.filter(leftRight, dt, T.MIN_CUTOFF, T.BETA);
-    const fb = this.tiltFilter.y.filter(forwardBack, dt, T.MIN_CUTOFF, T.BETA);
+    const lr = m.tiltFilter.x.filter(leftRight, dt, T.MIN_CUTOFF, T.BETA);
+    const fb = m.tiltFilter.y.filter(forwardBack, dt, T.MIN_CUTOFF, T.BETA);
 
     return {
       x: GAME_WIDTH / 2 + (lr / T.RANGE_X) * (GAME_WIDTH / 2),
@@ -726,7 +867,7 @@ class InputManager extends Events.EventEmitter {
   }
 
   /** Nunchuk: the joystick sets the speed of the cursor (rate control). */
-  private joystickTarget(state: PlayerState, dt: number): Point {
+  private joystickTarget(state: PlayerState, m: Motion, dt: number): Point {
     const speed = (value: number) => {
       const size = Math.abs(value);
       if (size <= CFG.NUNCHUK_DEAD_ZONE) return 0;
@@ -736,13 +877,13 @@ class InputManager extends Events.EventEmitter {
     // Joystick up is positive, screen y goes down.
     const vy = -speed(state.jy) * (CFG.NUNCHUK_INVERT_Y ? -1 : 1);
     const follow = CFG.NUNCHUK_SMOOTHING > 0 ? 1 - Math.exp(-dt / CFG.NUNCHUK_SMOOTHING) : 1;
-    this.velocity.x += (speed(state.jx) - this.velocity.x) * follow;
-    this.velocity.y += (vy - this.velocity.y) * follow;
-    return { x: this.cursor.x + this.velocity.x * dt, y: this.cursor.y + this.velocity.y * dt };
+    m.velocity.x += (speed(state.jx) - m.velocity.x) * follow;
+    m.velocity.y += (vy - m.velocity.y) * follow;
+    return { x: m.cursor.x + m.velocity.x * dt, y: m.cursor.y + m.velocity.y * dt };
   }
 
   /** Rate mode, like a joystick: the tilt sets the speed of the cursor. */
-  private rateTarget(state: PlayerState, dt: number): Point {
+  private rateTarget(state: PlayerState, m: Motion, dt: number): Point {
     const R = CFG.RATE;
     // Sensor y = tilt left/right -> screen x; sensor x = tilt forward/back -> screen y.
     let tiltX = state.y - state.neutralY;
@@ -752,9 +893,9 @@ class InputManager extends Events.EventEmitter {
     if (R.INVERT_Y) tiltY = -tiltY;
 
     const follow = R.SMOOTHING > 0 ? 1 - Math.exp(-dt / R.SMOOTHING) : 1;
-    this.velocity.x += (speedFor(tiltX) - this.velocity.x) * follow;
-    this.velocity.y += (speedFor(tiltY) - this.velocity.y) * follow;
-    return { x: this.cursor.x + this.velocity.x * dt, y: this.cursor.y + this.velocity.y * dt };
+    m.velocity.x += (speedFor(tiltX) - m.velocity.x) * follow;
+    m.velocity.y += (speedFor(tiltY) - m.velocity.y) * follow;
+    return { x: m.cursor.x + m.velocity.x * dt, y: m.cursor.y + m.velocity.y * dt };
   }
 
   /**
@@ -773,7 +914,11 @@ class InputManager extends Events.EventEmitter {
     // "Point at the star", in the middle of the game.
     const middle = this.toClient({ x: GAME_WIDTH / 2, y: GAME_HEIGHT / 2 });
     const height = canvas.getBoundingClientRect().height;
-    ui.setStar(middle.x, middle.y, height, CFG.RECENTER.TEXT, this.recentering && this.mode === 'tilt');
+    // Only for an MPU-6050 that still has to point at it (the Nunchuk has no gyro: never a star for it).
+    const waiting = CONTROLLER_PLAYERS.some(
+      (p) => this.controllerInUse(p) && this.players.get(p)?.type === 'mpu' && !this.centered.has(p),
+    );
+    ui.setStar(middle.x, middle.y, height, CFG.RECENTER.TEXT, this.recentering && waiting);
   }
 
   /** Is this scene in split mode (player 1 on the controller, player 2 on the mouse)? */
@@ -821,8 +966,9 @@ class InputManager extends Events.EventEmitter {
         (this.recentering ? '   waiting: point at the star' : ''),
       `ports     ${this.controllers.size}   ${this.messagesPerSecond} msg/s`,
       `cursor    ${this.cursor.x.toFixed(0)}, ${this.cursor.y.toFixed(0)}` +
-        (nunchuk || CFG.CONTROL_MODE === 'rate' ? `   speed ${this.velocity.x.toFixed(0)}, ${this.velocity.y.toFixed(0)}` : ''),
-      `mouse     ${this.mouse.x.toFixed(0)}, ${this.mouse.y.toFixed(0)}`,
+        (nunchuk || CFG.CONTROL_MODE === 'rate' ? `   speed ${this.motion[1].velocity.x.toFixed(0)}, ${this.motion[1].velocity.y.toFixed(0)}` : ''),
+      `mouse     ${this.mouse.x.toFixed(0)}, ${this.mouse.y.toFixed(0)}` +
+        (this.player2Active() ? `   (P2 controller${this.player2DrivesPointer() ? ' moves it' : ''})` : ''),
     ];
 
     if (p1 && !nunchuk && CFG.CONTROL_MODE === 'point') {

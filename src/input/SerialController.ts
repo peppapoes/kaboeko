@@ -15,6 +15,8 @@ interface Handlers {
 const MAX_BUFFER = 4096;
 
 export class SerialController {
+  /** Which player this controller is (set by the InputManager at its first message). */
+  player?: 1 | 2;
   private reader?: ReadableStreamDefaultReader<string>;
   private closing = false;
 
