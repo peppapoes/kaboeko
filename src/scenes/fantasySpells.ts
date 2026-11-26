@@ -24,7 +24,7 @@ export interface SpellDef {
    * - star: a magic star flies to the witch
    * - potion: a potion bottle is thrown at the witch
    * - monkeys: flying monkeys attack the witch (the Golden Cap spell from The Wizard of Oz calls them)
-   * - deer: a deer (a Patronus) leaps at the witch
+   * - deer: a deer (a Patronus) goes at the witch
    * - sword: a pen is thrown and turns into a sword halfway (Percy Jackson's Riptide)
    */
   effect: 'star' | 'potion' | 'monkeys' | 'deer' | 'sword';
@@ -80,12 +80,13 @@ export const SPELLS: SpellDef[] = [
     name: 'Ep-pe, pep-pe, kak-ke!\nHil-lo, hol-lo, hel-lo!\nZiz-zy, zuz-zy, zik!',
     source: 'De tovenaar van Oz',
     effect: 'monkeys',
-    // A full circle, starting at the top, going right (clockwise).
-    shape: arc(-90, 270, 28),
+    // A circle, starting at the top, going right (clockwise). It stops just before
+    // the start, so the end (the arrow) doesn't cover the start dot.
+    shape: arc(-90, 240, 28),
   },
   {
-    // Percy Jackson's pen that turns into a sword (Anaklusmos, "Riptide").
-    name: 'Anaklusmos',
+    // Percy Jackson's pen that turns into a sword: Anaklusmos ("Riptide"), in the Dutch books "Doemtij".
+    name: 'Anaklusmos\nDoemtij',
     source: 'Percy Jackson',
     effect: 'sword',
     // Up and down again (throwing the pen): up on the left, down on the right, so the dots don't overlap.
@@ -109,26 +110,55 @@ export function placeShape(shape: Point[], cx: number, cy: number, size: number)
   return shape.map((p) => ({ x: cx + (p.x * size) / 2, y: cy + (p.y * size) / 2 }));
 }
 
-/** Points along a line at (about) equal distances, for the dots on screen. */
+/**
+ * The dots on screen along a line, about `spacing` apart. There is always a
+ * dot exactly on every corner and on the end, and the dots between two
+ * corners are spread evenly (so no dots squeezed together near a corner).
+ */
 export function resample(line: Point[], spacing: number): Point[] {
-  const result: Point[] = [{ ...line[0] }];
-  let carry = 0;
+  // Split the line into smooth pieces at its corners (where it turns sharply).
+  const pieces: Point[][] = [[line[0]]];
   for (let i = 1; i < line.length; i++) {
-    const a = line[i - 1];
-    const b = line[i];
-    const length = Math.hypot(b.x - a.x, b.y - a.y);
-    let d = spacing - carry;
-    while (d <= length) {
-      const t = d / length;
-      result.push({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
-      d += spacing;
-    }
-    carry = length - (d - spacing);
+    pieces[pieces.length - 1].push(line[i]);
+    if (i < line.length - 1 && turn(line[i - 1], line[i], line[i + 1]) > CORNER) pieces.push([line[i]]);
   }
-  const last = line[line.length - 1];
-  const end = result[result.length - 1];
-  if (Math.hypot(last.x - end.x, last.y - end.y) > spacing / 3) result.push({ ...last });
+
+  const result: Point[] = [{ ...line[0] }];
+  for (const piece of pieces) {
+    const length = lengthOf(piece);
+    const steps = Math.max(1, Math.round(length / spacing));
+    for (let k = 1; k <= steps; k++) result.push(pointAt(piece, (length * k) / steps));
+  }
   return result;
+}
+
+/** A turn sharper than this (radians) is a corner. */
+const CORNER = (35 * Math.PI) / 180;
+
+/** How much the line turns at `b` (radians, 0 = straight on). */
+function turn(a: Point, b: Point, c: Point): number {
+  const d = Math.atan2(c.y - b.y, c.x - b.x) - Math.atan2(b.y - a.y, b.x - a.x);
+  return Math.abs(Math.atan2(Math.sin(d), Math.cos(d)));
+}
+
+/** The point at `distance` along a line. */
+function pointAt(line: Point[], distance: number): Point {
+  let left = distance;
+  for (let i = 1; i < line.length; i++) {
+    const step = Math.hypot(line[i].x - line[i - 1].x, line[i].y - line[i - 1].y);
+    if (left <= step || i === line.length - 1) {
+      const t = step === 0 ? 0 : Math.min(left / step, 1);
+      return { x: line[i - 1].x + (line[i].x - line[i - 1].x) * t, y: line[i - 1].y + (line[i].y - line[i - 1].y) * t };
+    }
+    left -= step;
+  }
+  return { ...line[line.length - 1] };
+}
+
+function lengthOf(line: Point[]): number {
+  let length = 0;
+  for (let i = 1; i < line.length; i++) length += Math.hypot(line[i].x - line[i - 1].x, line[i].y - line[i - 1].y);
+  return length;
 }
 
 /**
