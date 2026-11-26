@@ -66,7 +66,9 @@ De Arduino-sketch staat in `hardware/kaboeko_mpu6050/`.
   De heks gooit vliegende apen en gifflesjes; een blauwe cirkel toont waar ze
   landen. Houdt speler 1 daar de open paraplu als de aanval aankomt, dan kaatst die
   terug naar de heks en klapt de paraplu vanzelf dicht. Mist de paraplu, dan krijgt de heks wat leven terug. Speler 2 trekt met de toverstaf de
-  stippellijn van een spreuk na (rood = start). Dan vuurt de spreuk op de heks. Zolang de paraplu open is,
+  stippellijn van een spreuk na (rood = start). Boven de stippellijn staat een
+  quote-kaartje (zoals bij geschiedenis) met de spreuk en uit welk boek die komt.
+  Dan vuurt de spreuk op de heks. Zolang de paraplu open is,
   kan speler 2 geen spreuk doen ("Wacht! De paraplu is open"). Elke treffer laat haar
   levensbalk zakken. Bij nul verdwijnt de heks in rook, komt het
   boek van geschiedenis tevoorschijn. Een knop of klik opent het boek (zoals bij geschiedenis).

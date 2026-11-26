@@ -15,13 +15,19 @@ export interface SpellDef {
   /** Shown above the shape while it has to be traced (\n = new line). */
   name: string;
   /**
+   * Where the spell comes from: shown on a quote card after casting it, like
+   * the quotes in geschiedenis (e.g. "Harry Potter").
+   */
+  source: string;
+  /**
    * What the spell does:
    * - star: a magic star flies to the witch
    * - potion: a potion bottle is thrown at the witch
    * - monkeys: flying monkeys attack the witch (the Golden Cap spell from The Wizard of Oz calls them)
-   * - rabbit: a glowing rabbit (a Patronus) hops at the witch
+   * - deer: a deer (a Patronus) leaps at the witch
+   * - sword: a pen is thrown and turns into a sword halfway (Percy Jackson's Riptide)
    */
-  effect: 'star' | 'potion' | 'monkeys' | 'rabbit';
+  effect: 'star' | 'potion' | 'monkeys' | 'deer' | 'sword';
   /**
    * The movement, from start to end. Coordinates from -1 to 1
    * (x: left -> right, y: top -> bottom); scaled to the spell area on screen.
@@ -52,6 +58,7 @@ function wave(waves: number, height: number, steps: number): Point[] {
 export const SPELLS: SpellDef[] = [
   {
     name: 'Expelliarmus',
+    source: 'Harry Potter',
     effect: 'star',
     // A lightning bolt from top to bottom.
     shape: [
@@ -63,19 +70,34 @@ export const SPELLS: SpellDef[] = [
   },
   {
     name: 'Expecto Patronum',
-    effect: 'rabbit',
+    source: 'Harry Potter',
+    effect: 'deer',
     // A wave, from left to right.
     shape: wave(1.5, 0.45, 30),
   },
   {
     // The Golden Cap spell from The Wizard of Oz: one spell in three parts.
     name: 'Ep-pe, pep-pe, kak-ke!\nHil-lo, hol-lo, hel-lo!\nZiz-zy, zuz-zy, zik!',
+    source: 'De tovenaar van Oz',
     effect: 'monkeys',
     // A full circle, starting at the top, going right (clockwise).
     shape: arc(-90, 270, 28),
   },
   {
+    // Percy Jackson's pen that turns into a sword (Anaklusmos, "Riptide").
+    name: 'Anaklusmos',
+    source: 'Percy Jackson',
+    effect: 'sword',
+    // Up and down again (throwing the pen): up on the left, down on the right, so the dots don't overlap.
+    shape: [
+      { x: -0.25, y: 0.85 },
+      { x: 0, y: -0.85 },
+      { x: 0.25, y: 0.85 },
+    ],
+  },
+  {
     name: 'Toverdrank!',
+    source: 'Asterix en Obelix',
     effect: 'potion',
     // Throwing a potion: a big arch from bottom left over the top to bottom right.
     shape: arc(180, 360, 20, 0.85, 0.85).map((p) => ({ x: p.x, y: p.y + 0.4 })),
