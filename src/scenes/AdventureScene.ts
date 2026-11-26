@@ -49,13 +49,16 @@ export const CONFIG = {
     aheadChance: 0.75,
     /** Straight ahead: at most this far from the middle. Off to one side: between these. */
     aheadRange: 200,
-    sideRange: [430, 700] as [number, number],
-    /** Half the width of the boat for hits: smaller = easier. */
-    boatHalfWidth: 140,
+    sideRange: [760, 950] as [number, number],
+    /**
+     * Half the width of the boat for hits: smaller = easier. An obstacle hits when it is closer to the
+     * middle than this + its own halfWidth (590 to 660 pixels). Keep sideRange bigger than that.
+     */
+    boatHalfWidth: 470,
   },
 
   /** How fast the boat moves sideways with the wheel turned all the way (game pixels per second). */
-  STEER_SPEED: 300,
+  STEER_SPEED: 400,
   WHEEL: {
     /** The wheel can be turned this far (degrees) to each side... */
     maxAngle: 160,
