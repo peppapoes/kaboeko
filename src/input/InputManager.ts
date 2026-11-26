@@ -914,7 +914,11 @@ class InputManager extends Events.EventEmitter {
     // "Point at the star", in the middle of the game.
     const middle = this.toClient({ x: GAME_WIDTH / 2, y: GAME_HEIGHT / 2 });
     const height = canvas.getBoundingClientRect().height;
-    ui.setStar(middle.x, middle.y, height, CFG.RECENTER.TEXT, this.recentering && CONTROLLER_PLAYERS.some((p) => this.controllerInUse(p)));
+    // Only for an MPU-6050 that still has to point at it (the Nunchuk has no gyro: never a star for it).
+    const waiting = CONTROLLER_PLAYERS.some(
+      (p) => this.controllerInUse(p) && this.players.get(p)?.type === 'mpu' && !this.centered.has(p),
+    );
+    ui.setStar(middle.x, middle.y, height, CFG.RECENTER.TEXT, this.recentering && waiting);
   }
 
   /** Is this scene in split mode (player 1 on the controller, player 2 on the mouse)? */
