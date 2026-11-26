@@ -78,6 +78,10 @@ export const CONFIG = {
     maxBuckets: 6,
     /** How far (px) a full boat sits lower. It never sinks further. */
     maxSink: 150,
+    /** How high the splashes of water come into the boat: bigger number = higher. The puddles stay put. */
+    splashLift: 100,
+    /** Splashes stay at least this far (px) from the left and right side of the screen. */
+    splashEdgeMargin: 420,
     /** How long (ms) the bucket has to be on a puddle to fill. */
     fillTime: 500,
   },
@@ -207,6 +211,12 @@ interface Puddle {
   image: GameObjects.Image;
   /** How many buckets of water are in it (1 or 2). */
   buckets: number;
+}
+
+/** Where a splash of water may be: not too close to the sides of the screen. */
+function keepOffSides(x: number): number {
+  const margin = CONFIG.WATER.splashEdgeMargin;
+  return PMath.Clamp(x, margin, GAME_WIDTH - margin);
 }
 
 /** Height of the top of the railing at x. */
@@ -554,8 +564,8 @@ export class AdventureScene extends Scene {
   private hit(obstacle: Obstacle) {
     this.jolt = 1;
     this.cameras.main.shake(250, 0.004);
-    const x = PMath.Clamp(GAME_WIDTH / 2 + (obstacle.x - this.boatX), 350, GAME_WIDTH - 350);
-    this.burst(x, railY(x) + 60 + this.boatOffset(), x < GAME_WIDTH / 2);
+    const x = keepOffSides(GAME_WIDTH / 2 + (obstacle.x - this.boatX));
+    this.burst(x, railY(x) + 60 - CONFIG.WATER.splashLift + this.boatOffset(), x < GAME_WIDTH / 2);
     this.splashIn(x < GAME_WIDTH / 2 ? 'left' : 'right');
   }
 
@@ -611,15 +621,16 @@ export class AdventureScene extends Scene {
 
     // The splash comes over the railing, from the outside, and lands on the spot.
     const fromLeft = spot.x < GAME_WIDTH / 2;
-    const startX = spot.x + (fromLeft ? -230 : 230);
+    const startX = keepOffSides(spot.x + (fromLeft ? -230 : 230));
+    const landX = keepOffSides(spot.x);
     const splash = this.add
-      .image(startX, railY(startX) + this.boatOffset() + 40, PMath.RND.pick(['av-splash1', 'av-splash2']))
+      .image(startX, railY(startX) + this.boatOffset() + 40 - CONFIG.WATER.splashLift, PMath.RND.pick(['av-splash1', 'av-splash2']))
       .setFlipX(fromLeft)
       .setDepth(DEPTH.splash)
       .setScale(0);
     const scale = (0.8 * DESIGN) / RENDER_SCALE;
     this.tweens.add({ targets: splash, scale, angle: fromLeft ? 15 : -15, duration: 350, ease: 'Back.Out' });
-    this.tweens.add({ targets: splash, x: spot.x, y: spot.y + this.sink, angle: fromLeft ? 110 : -110, delay: 450, duration: 400, ease: 'Quad.In' });
+    this.tweens.add({ targets: splash, x: landX, y: spot.y + this.sink - CONFIG.WATER.splashLift, angle: fromLeft ? 110 : -110, delay: 450, duration: 400, ease: 'Quad.In' });
     this.tweens.add({
       targets: splash,
       alpha: 0,
