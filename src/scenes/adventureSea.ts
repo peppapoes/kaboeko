@@ -37,6 +37,12 @@ const SHAPES: [number, number, number][][] = [
   [[24, 1, 2.6], [12, 2, 4.1]],
 ];
 
+/** How far the lowest dip of any wave shape is below its middle line (in the texture). */
+const DEEPEST_DIP = Math.max(...SHAPES.map((shape) => shape.reduce((sum, [amount]) => sum + amount, 0)));
+
+/** How high the waves are drawn at progress p (flatter when further away). */
+const waveHeight = (p: number) => 0.45 + p * 0.75;
+
 /** Screen height of the middle line of a wave at progress p (perspective: faster when nearer). */
 export function waveY(p: number): number {
   return SEA.horizon + (SEA.end - SEA.horizon) * Math.pow(p, 1.6);
@@ -80,7 +86,7 @@ export class Sea {
       const left = -(((slide % PERIOD) + PERIOD) % PERIOD);
       wave.image
         .setPosition(left, this.waveTop(i))
-        .setScale(1 / TEXTURE.resolution, (0.45 + wave.p * 0.75) / TEXTURE.resolution)
+        .setScale(1 / TEXTURE.resolution, waveHeight(wave.p) / TEXTURE.resolution)
         .setDepth(SEA.depth + wave.p);
     });
     return restarted;
@@ -88,6 +94,14 @@ export class Sea {
 
   progress(index: number): number {
     return this.waves[index].p;
+  }
+
+  /**
+   * How far below its middle line a wave's edge can dip right now. Whatever is
+   * lower than waveTop + waveDip is always hidden behind that wave.
+   */
+  waveDip(index: number): number {
+    return DEEPEST_DIP * waveHeight(this.waves[index].p);
   }
 
   /** Height of a wave's middle line right now. A new wave comes up from behind the one in front of it. */

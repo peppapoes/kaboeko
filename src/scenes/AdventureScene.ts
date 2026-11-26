@@ -22,7 +22,7 @@ import { Sea, SEA, waveY } from './adventureSea';
  *     player) opens the treasure chest; the book comes out and opens.
  *
  * Players: player 1 = controller, player 2 = mouse (or player 2's controller).
- * Testing without a controller: player 1 on the keyboard (WASD/arrows to move,
+ * Testing without a controller: player 1 on the keyboard (ZQSD/arrows to move,
  * Space/Enter is the button).
  *
  * The water is drawn in code: see adventureSea.ts.
@@ -133,14 +133,19 @@ interface ObstacleDef {
   sunk: number;
   /** Animals bob up and down. */
   bob: number;
+  /**
+   * The bottom must never show: it sits `sunk` below the deepest dip of its
+   * wave (not just below the middle of the wave), and only bobs further down.
+   */
+  keepBottomHidden?: boolean;
 }
 
 const OBSTACLES: ObstacleDef[] = [
   { key: 'av-rock1', file: 'background/steen01.svg', originX: 294 / 599, originY: 790 / 801, halfWidth: 170, sunk: 90, bob: 0 },
   { key: 'av-rock2', file: 'background/steen02.svg', originX: 262 / 535, originY: 1011 / 1022, halfWidth: 140, sunk: 90, bob: 0 },
   { key: 'av-rock3', file: 'background/steen03.svg', originX: 207 / 424, originY: 1045 / 1056, halfWidth: 120, sunk: 90, bob: 0 },
-  { key: 'av-whale', file: 'obstakels/walvis.svg', originX: 335 / 679, originY: 549 / 676, halfWidth: 190, sunk: 40, bob: 22 },
-  { key: 'av-croc', file: 'obstakels/tik-tok-krokodil.svg', originX: 252 / 512, originY: 616 / 641, halfWidth: 160, sunk: 50, bob: 22 },
+  { key: 'av-whale', file: 'obstakels/walvis.svg', originX: 335 / 679, originY: 549 / 676, halfWidth: 190, sunk: 40, bob: 22, keepBottomHidden: true },
+  { key: 'av-croc', file: 'obstakels/tik-tok-krokodil.svg', originX: 252 / 512, originY: 616 / 641, halfWidth: 160, sunk: 85, bob: 22, keepBottomHidden: true },
 ];
 
 /**
@@ -161,6 +166,9 @@ const ARRIVE_BOAT_DROP = d(520);
 const ARRIVE_TIME = 7;
 /** The open book at the end (same as in the other games). */
 const BOOK = { y: 650, closedWidth: 600, openWidth: 1520 };
+
+/** Player 1's keys for testing (positions: ZQSD on AZERTY) and the arrows. */
+const MOVE_KEYS = ['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'];
 
 /** Draw order (higher = on top). The waves and obstacles are between SEA.depth and SEA.depth + 1. */
 const DEPTH = {
@@ -462,7 +470,7 @@ export class AdventureScene extends Scene {
     this.jolt = Math.max(this.jolt - dt * 1.4, 0);
 
     const bob = Math.sin(this.time0 * 1.7) * 7;
-    const roll = Math.sin(this.time0 * 1.1) * 0.5 + this.steer() * 1.8 + Math.sin(this.time0 * 28) * this.jolt * 3;
+    const roll = Math.sin(this.time0 * 1.1) * 0.5 + this.steer() * 1.8 + Math.sin(this.time0 * 18) * this.jolt * 1.2;
     this.boat.y = PIVOT.y + this.sink + this.boatDrop + bob;
     this.boat.angle = roll;
   }
@@ -518,12 +526,14 @@ export class AdventureScene extends Scene {
       const spread = 0.25 + 0.75 * Math.pow(near, 1.3);
       // After the boat: it goes down into the water.
       const leaving = PMath.Clamp((obstacle.p - HIT_P) / (GONE_P - HIT_P), 0, 1);
-      const bob = Math.sin(this.time0 * 3) * def.bob * size;
+      const wobble = Math.sin(this.time0 * 3);
+      const bob = (def.keepBottomHidden ? (wobble + 1) / 2 : wobble) * def.bob * size;
+      const dip = def.keepBottomHidden ? this.sea.waveDip(obstacle.wave) : 0;
       image
         .setScale((size * DESIGN) / RENDER_SCALE)
         .setPosition(
           GAME_WIDTH / 2 + (obstacle.x - this.boatX) * spread,
-          this.sea.waveTop(obstacle.wave) + (def.sunk * size + bob) + leaving * leaving * 700,
+          this.sea.waveTop(obstacle.wave) + dip + def.sunk * size + bob + leaving * leaving * 700,
         )
         .setAlpha(1 - PMath.Clamp((leaving - 0.6) / 0.4, 0, 1))
         // Just behind its own wave, so that wave covers its bottom.
@@ -540,7 +550,7 @@ export class AdventureScene extends Scene {
   /** The boat bumps into something: it shakes, and extra water splashes in. */
   private hit(obstacle: Obstacle) {
     this.jolt = 1;
-    this.cameras.main.shake(450, 0.012);
+    this.cameras.main.shake(250, 0.004);
     const x = PMath.Clamp(GAME_WIDTH / 2 + (obstacle.x - this.boatX), 350, GAME_WIDTH - 350);
     this.burst(x, railY(x) + 60 + this.boatOffset(), x < GAME_WIDTH / 2);
     this.splashIn(x < GAME_WIDTH / 2 ? 'left' : 'right');
@@ -676,8 +686,8 @@ export class AdventureScene extends Scene {
     // No controller: the keyboard.
     const held = (...keys: string[]) => (keys.some((k) => this.heldKeys.has(k)) ? 1 : 0);
     const step = 900 * dt;
-    this.keyboardPos.x = PMath.Clamp(this.keyboardPos.x + (held('d', 'arrowright') - held('a', 'arrowleft')) * step, 0, GAME_WIDTH);
-    this.keyboardPos.y = PMath.Clamp(this.keyboardPos.y + (held('s', 'arrowdown') - held('w', 'arrowup')) * step, 0, GAME_HEIGHT);
+    this.keyboardPos.x = PMath.Clamp(this.keyboardPos.x + (held('KeyD', 'ArrowRight') - held('KeyA', 'ArrowLeft')) * step, 0, GAME_WIDTH);
+    this.keyboardPos.y = PMath.Clamp(this.keyboardPos.y + (held('KeyS', 'ArrowDown') - held('KeyW', 'ArrowUp')) * step, 0, GAME_HEIGHT);
     return this.keyboardPos;
   }
 
@@ -854,17 +864,21 @@ export class AdventureScene extends Scene {
     else if (this.state === 'sailing' && event.player === 1) this.throwWater();
   }
 
-  /** Testing without a controller: player 1 on the keyboard (WASD/arrows + Space/Enter). */
+  /**
+   * Testing without a controller: player 1 on the keyboard (ZQSD/arrows + Space/Enter).
+   * event.code is the position of a key: 'KeyW' is the key marked Z on AZERTY
+   * (and W on QWERTY), so this works on both.
+   */
   private onTestKey = (event: KeyboardEvent) => {
     if (inputManager.getMode() === 'tilt' || event.metaKey || event.ctrlKey || event.altKey) return;
-    const key = event.key.toLowerCase();
-    if (['w', 'a', 's', 'd', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright'].includes(key)) {
+    const key = event.code;
+    if (MOVE_KEYS.includes(key)) {
       event.preventDefault();
       // So D doesn't also open the debug panel.
       event.stopImmediatePropagation();
       if (event.type === 'keydown') this.heldKeys.add(key);
       else this.heldKeys.delete(key);
-    } else if ((key === ' ' || key === 'enter') && event.type === 'keydown') {
+    } else if (['Space', 'Enter', 'NumpadEnter'].includes(key) && event.type === 'keydown') {
       event.preventDefault();
       event.stopImmediatePropagation();
       if (!event.repeat) this.onSelect({ player: 1 });
