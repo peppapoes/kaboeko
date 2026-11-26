@@ -5,7 +5,7 @@ import { PlayerPointers } from '../playerPointers';
 import { dropIn, popIn, riseIn, sinkOut, slideIn } from '../puppet';
 import { loadSvgParts } from '../svgParts';
 import { addStartButton, preloadStartButton } from '../ui';
-import { COMEDY_CHARACTERS, type ComedyCharacter } from './komedieCharacters';
+import { COMEDY_CHARACTERS, type ComedyCharacter, type Movement } from './komedieCharacters';
 
 /*
  * Minigame "komedie": "Wie zei dat?"
@@ -116,9 +116,12 @@ const SIGN = { x: GAME_WIDTH / 2, y: -8, scale: 0.88 };
 /** The brown "Druk op een knop om te starten" button. */
 const START_BUTTON = { x: GAME_WIDTH / 2, y: 1090, width: 750 };
 
-/** Walkers (walk / walkFall) stand with their feet here and turn around at these x positions. */
-const FLOOR_Y = 1090;
-const WALK_RANGE = { min: 520, max: 1400 };
+/**
+ * Walkers (walk / walkFall) stand with their feet here and turn around at these x positions.
+ * (Also whoever falls off the ball when it bursts: it walks on over the floor.)
+ */
+const FLOOR_Y = 1190;
+const WALK_RANGE = { min: 520, max: 1720 };
 /**
  * The podium in the middle (opstapding.svg, stretched to the design's size).
  * bounce: hidden = feet so low that the head is just under the rim; peeking up = feet `up` higher;
@@ -207,6 +210,8 @@ const TRIP = { angle: 85, fallTime: 0.35, lieTime: 0.9, riseTime: 0.45 };
 /** One character on stage. */
 interface Actor {
   def: ComedyCharacter;
+  /** How it moves now: the one from the data file, but it can change (e.g. 'ball' -> 'walkFall' when the ball bursts). */
+  movement: Movement;
   /** Moves around; holds the body, its prop (ball or trapeze) and the hint glow. */
   container: GameObjects.Container;
   body: Body;
@@ -346,12 +351,10 @@ export class KomedieScene extends Scene {
     this.input.on('pointerup', this.pressButton, this);
     inputManager.on('select', this.onSelect, this);
     inputManager.on('shake', this.onShake, this);
-    inputManager.on('button', this.onControllerButton, this);
     this.events.once('shutdown', () => {
       this.input.off('pointerup', this.pressButton, this);
       inputManager.off('select', this.onSelect, this);
       inputManager.off('shake', this.onShake, this);
-      inputManager.off('button', this.onControllerButton, this);
     });
 
     void this.showTitle();
@@ -365,7 +368,7 @@ export class KomedieScene extends Scene {
 
   // --- Input from the InputManager -------------------------------------------
 
-  /** A click (mouse = player 2) or player 1's button: throw. */
+  /** A click (player 2: the mouse, or player 2's controller button) or player 1's button: throw. */
   private onSelect(event: { player?: number }) {
     if (this.state === 'play') this.throwBalloon(event.player === 1 ? 1 : 2);
   }
@@ -373,13 +376,6 @@ export class KomedieScene extends Scene {
   /** The throw gesture (shake): throw, or go on from the title/intro. */
   private onShake(event: { player: number }) {
     if (this.state === 'play') this.throwBalloon(event.player === 1 ? 1 : 2);
-    else this.pressButton();
-  }
-
-  /** Controller buttons. Player 1's button also comes as 'select' (and a click), so only player 2's is handled here. */
-  private onControllerButton(event: { player: number }) {
-    if (event.player === 1) return;
-    if (this.state === 'play') this.throwBalloon(2);
     else this.pressButton();
   }
 
@@ -580,7 +576,7 @@ export class KomedieScene extends Scene {
     this.actors = defs.map((def, i) => this.createActor(def, i));
     // (The cannon character comes out of the cannon by itself.)
     this.actors
-      .filter((actor) => actor.def.movement !== 'cannon')
+      .filter((actor) => actor.movement !== 'cannon')
       .forEach((actor, i) => popIn(this, actor.container, { delay: 700 + i * 150 }));
     this.round = shuffle(this.actors);
     this.current = 0;
@@ -664,6 +660,7 @@ export class KomedieScene extends Scene {
     const [minFall, maxFall] = CONFIG.SPEED.fallEvery;
     return {
       def,
+      movement: def.movement,
       container,
       body,
       prop,
@@ -719,17 +716,17 @@ export class KomedieScene extends Scene {
     actor.t += dt;
 
     // The trapeze keeps swinging, also after its character fell off.
-    if (actor.def.movement === 'swing') {
+    if (actor.movement === 'swing') {
       container.angle = S.swingAngle * Math.sin((2 * Math.PI * actor.t) / S.swingTime);
     }
     if (actor.state !== 'free') return;
 
     let bob = 0;
     let wobble = 0;
-    switch (actor.def.movement) {
+    switch (actor.movement) {
       case 'walk':
       case 'walkFall':
-        if (actor.def.movement === 'walkFall') this.updateTrip(actor, dt);
+        if (actor.movement === 'walkFall') this.updateTrip(actor, dt);
         if (actor.trip === 'none') {
           container.x += actor.dir * S.walk * dt;
           this.turnAtEdges(actor);
@@ -800,11 +797,11 @@ export class KomedieScene extends Scene {
     body.angle = wobble + actor.tripAngle + shake + hint;
     body.y = actor.baseY - bob;
     // Walkers and flyers face the way they move.
-    const turns = ['walk', 'walkFall', 'fly'].includes(actor.def.movement);
+    const turns = ['walk', 'walkFall', 'fly'].includes(actor.movement);
     const facing = turns ? actor.dir : 1;
     body.scaleX = Math.abs(body.scaleX) * facing;
 
-    if (actor.def.movement === 'bounce') this.cropBelow(actor, PODIUM.cropY);
+    if (actor.movement === 'bounce') this.cropBelow(actor, PODIUM.cropY);
   }
 
   /**
@@ -930,7 +927,7 @@ export class KomedieScene extends Scene {
     const p = CONFIG.HITBOX_PADDING;
     if (x < b.x - p || x > b.right + p || y < b.y - p || y > b.bottom + p) return false;
     // Behind the podium: only the part that sticks out counts.
-    if (actor.def.movement === 'bounce') {
+    if (actor.movement === 'bounce') {
       const podiumTop = PODIUM.y - PODIUM.height / 2 + 25;
       const inPodium = Math.abs(x - PODIUM.x) < PODIUM.width / 2 - 20 && y > podiumTop;
       if (inPodium || y > PODIUM.cropY) return false;
@@ -1098,15 +1095,70 @@ export class KomedieScene extends Scene {
   /** The balloon arrives: splash, and check what it hit. */
   private balloonLands(x: number, y: number, player: Player) {
     this.splash(x, y);
-    if (this.state !== 'play' || this.phase !== 'ask') return;
+    if (this.state !== 'play') return;
 
-    const hits = this.actors.filter((actor) => this.isHit(actor, x, y));
-    if (hits.length === 0) return;
+    // The ball under a character bursts when it is hit (always, also between two quotes).
+    const hits = this.phase === 'ask' ? this.actors.filter((actor) => this.isHit(actor, x, y)) : [];
+    if (hits.length === 0) {
+      const ball = this.actors.find((actor) => actor.movement === 'ball' && this.ballHit(actor, x, y));
+      if (ball) this.popBall(ball);
+      return;
+    }
 
     // When characters overlap, the right one counts (kinder for the players).
     const target = this.round[this.current];
     if (hits.includes(target)) this.rightHit(target, player);
     else this.wrongHit(hits.sort((a, b) => b.container.depth - a.container.depth)[0]);
+  }
+
+  /** Is (x, y) on the ball of this character? (The ball is round, so: within its radius.) */
+  private ballHit(actor: Actor, x: number, y: number) {
+    const ball = actor.prop;
+    if (!ball) return false;
+    const center = { x: actor.container.x + ball.x, y: actor.container.y + ball.y };
+    return Math.hypot(x - center.x, y - center.y) < (ball.displayWidth / 2) * 0.95 + CONFIG.HITBOX_PADDING / 2;
+  }
+
+  /**
+   * The ball bursts (a puff), the character on it falls down to the floor, gets up
+   * and walks on over the floor (walkFall: now and then it trips again).
+   */
+  private popBall(actor: Actor) {
+    const ball = actor.prop;
+    if (!ball) return;
+    actor.prop = undefined;
+    const center = { x: actor.container.x + ball.x, y: actor.container.y + ball.y };
+
+    // Pop: the ball swells for a moment and is gone; a puff of smoke and a splash where it was.
+    this.tweens.add({
+      targets: ball,
+      scale: ball.scale * 1.25,
+      alpha: 0,
+      duration: 140,
+      ease: 'Quad.Out',
+      onComplete: () => ball.destroy(),
+    });
+    const puff = this.add.image(center.x, center.y, 'km-smoke').setDepth(DEPTH.effects).setAngle(PMath.Between(-20, 20));
+    const puffScale = (BALL.width * 1.3) / puff.width;
+    puff.setScale(puffScale * 0.4);
+    this.tweens.add({ targets: puff, scale: puffScale, duration: 220, ease: 'Back.Out' });
+    this.tweens.add({ targets: puff, alpha: 0, scale: puffScale * 1.15, delay: 450, duration: 500, onComplete: () => puff.destroy() });
+    this.splash(center.x, center.y);
+
+    // A character already hit (in the spotlight or falling out) doesn't need to fall any more.
+    if (actor.state !== 'free') return;
+
+    // The character drops from the top of the ball to the floor, falling over on the way...
+    const feetY = actor.container.y + actor.body.y;
+    actor.container.y = feetY;
+    actor.baseY = 0;
+    actor.body.y = 0;
+    actor.movement = 'walkFall';
+    actor.trip = 'falling';
+    actor.tripTimer = TRIP.fallTime;
+    actor.container.x = PMath.Clamp(actor.container.x, WALK_RANGE.min, WALK_RANGE.max);
+    // ...and lands with a little bounce. Then it lies for a moment, gets up and walks on (see updateTrip).
+    this.tweens.add({ targets: actor.container, y: FLOOR_Y, duration: 550, ease: 'Bounce.Out' });
   }
 
   /** Two players play when a controller is in use (player 1 = controller, player 2 = mouse). */
