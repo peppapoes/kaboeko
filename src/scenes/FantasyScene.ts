@@ -223,16 +223,26 @@ const ATTACK = {
   flyTime: 3200,
   /** Where attacks can land (the floor in front of the witch). */
   targetArea: { x: 200, y: 860, width: 1520, height: 260 },
-  /** How close (px) the attack has to come to the middle of the open umbrella to bounce back. */
+  /**
+   * When the attack arrives, the open umbrella has to be on the circle: at most
+   * this far (px) from its middle. Only then it bounces back (not earlier in the air).
+   */
   blockRadius: 150,
-  /** The umbrella only catches the attack in the last part of its flight (0..1). */
-  blockFrom: 0.45,
+  /** After bouncing an attack back, the umbrella closes by itself after this many ms. */
+  closeAfterBounce: 600,
   monkeySize: 230,
   potionSize: 140,
 };
 
-/** Where the movement for a spell is shown (center and size, game pixels). */
-const SPELL_AREA = { x: 1520, y: 600, size: 360 };
+/** Where the movement for a spell is shown: the wand has to follow its dots. */
+const SPELL_AREA = {
+  /** Middle of the movement on screen, and its size (game pixels). */
+  x: 1520,
+  y: 600,
+  size: 360,
+  /** The dark circle behind the movement, as a part of `size`. */
+  backdrop: 0.72,
+};
 const SPELL = {
   /** First spell this many ms after the game starts; the next one this long after casting. */
   firstDelay: 1500,
@@ -246,9 +256,28 @@ const SPELL = {
 const PLAYER_COLOR = { p1: 0x2b69b4, p2: 0xd23636 };
 /** The spell movement (start dot, the part already done) is in player 2's colour. */
 const SPELL_COLOR = PLAYER_COLOR.p2;
+/**
+ * Above the spell's movement, a quote card (like in geschiedenis) shows the
+ * spell's words and where they come from. The card is the geschiedenis quote
+ * without its text (quote.svg); the text is added here. Positions in SVG pixels.
+ */
+const QUOTE = {
+  key: 'fantasy-quote',
+  file: 'quote.svg',
+  svgWidth: 782,
+  svgHeight: 358,
+  /** Width on screen. */
+  width: 540,
+  /** Left/right of the middle of the movement, and how far it overlaps the dark circle (px). */
+  x: -20,
+  overlap: 55,
+  /** The paper in the drawing is turned this much (degrees): the text turns with it. */
+  angle: -7.3,
+  text: { x: 392, y: 175 },
+};
 /** Dark outline around text in the game, so it can be read on any background. */
 const TEXT_OUTLINE = { color: '#03314E', thickness: 10 };
-/** Expecto Patronum: the glowing rabbit (size = width on screen, alpha = how see-through, hops on its way). */
+/** Expecto Patronum: the deer (size = width on screen, alpha = how see-through, hops on its way). */
 const PATRONUS = { size: 260, alpha: 0.85, runTime: 1300, hops: 3 };
 /** The Golden Cap spell: how many flying monkeys attack the witch, and the time between them. */
 const MONKEY_SPELL = { count: 3, gap: 220, size: 170 };
@@ -256,7 +285,23 @@ const MONKEY_SPELL = { count: 3, gap: 220, size: 170 };
 /** Images that are drawn in code (see makeTextures). */
 const SPARK_KEY = 'fantasy-spark';
 const HEART_KEY = 'fantasy-heart';
-const PATRONUS_KEY = 'fantasy-patronus';
+const PATRONUS_KEY = 'fantasy-hert';
+/**
+ * Anaklusmos (Percy Jackson): the pen is thrown, spinning, and halfway
+ * (`changeAt`, 0..1 of the flight) it turns into the sword. Sizes = height on screen.
+ */
+const PEN_SWORD = {
+  penKey: 'fantasy-pen',
+  swordKey: 'fantasy-sword',
+  penSize: 130,
+  swordSize: 260,
+  flyTime: 1000,
+  /** How high the throw goes (px above the straight line). */
+  arc: 240,
+  /** Turns per throw. */
+  spins: 3,
+  changeAt: 0.45,
+};
 const ICON_KEYS = { target: 'fantasy-icon-target', spell: 'fantasy-icon-spell' };
 /** Size of the line drawings on the player cards (1 = as drawn). */
 const CARD_ICON_SIZE = 0.85;
@@ -291,7 +336,6 @@ interface Attack {
   sprite: GameObjects.Image;
   marker: GameObjects.Graphics;
   tween?: Tweens.Tween;
-  blocked: boolean;
 }
 
 /** The spell the wizard is tracing now. */
@@ -372,6 +416,10 @@ export class FantasyScene extends Scene {
     svg('fantasy-umbrella-open', 'umbrellaOpen.svg');
     svg('fantasy-umbrella-closed', 'umbrella-closed.svg');
     svg(SIGN.key, SIGN.file);
+    svg(QUOTE.key, QUOTE.file);
+    svg(PATRONUS_KEY, 'hert.svg');
+    svg(PEN_SWORD.penKey, 'pen.svg');
+    svg(PEN_SWORD.swordKey, 'sword.svg');
     this.load.image(BOOK.closedKey, BOOK.closedFile);
     this.load.image(BOOK.openKey, BOOK.openFile);
     Object.values(CARDS).forEach((card) => svg(card.key, card.file));
@@ -944,42 +992,22 @@ export class FantasyScene extends Scene {
 
   /** Show a new movement to copy (never the same one twice in a row). */
   private showNextSpell() {
-    if (this.state !== 'playing') return;
+    // Only one spell at a time.
+    if (this.state !== 'playing' || this.spell) return;
     const options = SPELLS.filter((spell) => spell !== this.lastSpell);
     const spell = options[PMath.Between(0, options.length - 1)];
     this.lastSpell = spell;
 
-    const line = placeShape(spell.shape, SPELL_AREA.x, SPELL_AREA.y, SPELL_AREA.size);
-    const dots = resample(line, SPELL.dotSpacing);
-    const trace = new SpellTrace(dots, SPELL.hitRadius);
+    // The dots around (0, 0), the middle of the example.
+    const local = resample(placeShape(spell.shape, 0, 0, SPELL_AREA.size), SPELL.dotSpacing);
 
-    const backdrop = this.add.circle(0, 0, SPELL_AREA.size * 0.72, 0x03314e, 0.6);
-    // The name on a dark label with a red border (player 2's colour), so it can be read while playing.
-    const name = this.add
-      .text(0, -SPELL_AREA.size * 0.72 - 30, spell.name, {
-        fontFamily: SIGN_FONT,
-        fontStyle: '700',
-        fontSize: '36px',
-        color: '#ffffff',
-        align: 'center',
-        lineSpacing: 2,
-        resolution: RENDER_SCALE,
-      })
-      // Bottom-center: a name of more lines grows upwards.
-      .setOrigin(0.5, 1);
-    const pad = { x: 28, y: 12 };
-    const labelW = name.width + pad.x * 2;
-    const labelH = name.height + pad.y * 2;
-    const label = this.add
-      .graphics()
-      .fillStyle(0x03314e, 0.92)
-      .fillRoundedRect(-labelW / 2, name.y - name.height - pad.y, labelW, labelH, Math.min(28, labelH / 2))
-      .lineStyle(5, PLAYER_COLOR.p2, 1)
-      .strokeRoundedRect(-labelW / 2, name.y - name.height - pad.y, labelW, labelH, Math.min(28, labelH / 2));
-    const local = dots.map((d) => ({ x: d.x - SPELL_AREA.x, y: d.y - SPELL_AREA.y }));
+    const backdrop = this.add.circle(0, 0, SPELL_AREA.size * SPELL_AREA.backdrop, 0x03314e, 0.5);
+    // Above the movement: a quote card (like in geschiedenis) with the spell's words and where they come from.
+    const quote = this.makeQuoteCard(spell);
+    quote.setPosition(QUOTE.x, -SPELL_AREA.size * SPELL_AREA.backdrop - (QUOTE.svgHeight * QUOTE.width) / QUOTE.svgWidth / 2 + QUOTE.overlap);
+    // White dots with a dark edge, so they show on any background.
     const dotsGraphics = this.add.graphics();
-    dotsGraphics.fillStyle(0xffffff, 0.75);
-    local.forEach((d) => dotsGraphics.fillCircle(d.x, d.y, 7));
+    local.forEach((d) => dotsGraphics.fillStyle(0x03314e, 0.9).fillCircle(d.x, d.y, 10).fillStyle(0xffffff, 1).fillCircle(d.x, d.y, 7));
     this.drawArrowHead(dotsGraphics, local[local.length - 2], local[local.length - 1]);
     const traced = this.add.graphics();
     // Where to start: a pulsing yellow circle.
@@ -1001,10 +1029,15 @@ export class FantasyScene extends Scene {
       .setOrigin(0.5);
 
     const view = this.add
-      .container(SPELL_AREA.x, SPELL_AREA.y, [backdrop, label, name, dotsGraphics, traced, start, lock])
+      .container(SPELL_AREA.x, SPELL_AREA.y, [backdrop, quote, dotsGraphics, traced, start, lock])
       .setDepth(DEPTH.spell);
-    popIn(this, view);
+    // The wand has to follow the dots where they are on screen.
+    const trace = new SpellTrace(
+      local.map((d) => ({ x: d.x + SPELL_AREA.x, y: d.y + SPELL_AREA.y })),
+      SPELL.hitRadius,
+    );
     this.spell = { def: spell, trace, view, traced, start, local, lock };
+    popIn(this, view);
     this.updateSpellLock();
   }
 
@@ -1014,16 +1047,19 @@ export class FantasyScene extends Scene {
     // While the umbrella is open, the wizard has to wait.
     if (!spell || this.state !== 'playing' || this.isUmbrellaOpen || !spell.trace.feed(from, to)) return;
 
-    // Draw the part that has been done in yellow.
+    // Draw the part that has been done in red.
     const done = spell.local.slice(0, spell.trace.reached);
-    spell.traced.clear().lineStyle(16, SPELL_COLOR, 1);
-    if (done.length > 1) {
-      spell.traced.beginPath().moveTo(done[0].x, done[0].y);
-      done.slice(1).forEach((d) => spell.traced.lineTo(d.x, d.y));
-      spell.traced.strokePath();
+    spell.traced.clear();
+    spell.start.setVisible(done.length === 0);
+    if (done.length > 0) {
+      spell.traced.lineStyle(16, SPELL_COLOR, 1);
+      if (done.length > 1) {
+        spell.traced.beginPath().moveTo(done[0].x, done[0].y);
+        done.slice(1).forEach((d) => spell.traced.lineTo(d.x, d.y));
+        spell.traced.strokePath();
+      }
+      spell.traced.fillStyle(SPELL_COLOR, 1).fillCircle(done[done.length - 1].x, done[done.length - 1].y, 14);
     }
-    spell.traced.fillStyle(SPELL_COLOR, 1).fillCircle(done[done.length - 1].x, done[done.length - 1].y, 14);
-    spell.start.setVisible(false);
 
     if (spell.trace.done) this.castSpell();
   }
@@ -1045,6 +1081,51 @@ export class FantasyScene extends Scene {
     spell.start.setVisible(!locked && spell.trace.reached === 0);
   }
 
+  /** The quote card: the spell's words, and where they come from (e.g. "Harry Potter"). */
+  private makeQuoteCard(spell: SpellDef): GameObjects.Container {
+    const scale = QUOTE.width / QUOTE.svgWidth;
+    const card = this.add.image(0, 0, QUOTE.key).setScale(scale / RENDER_SCALE);
+    // SVG pixels -> position on the card (whose middle is 0, 0).
+    const at = (p: { x: number; y: number }) => ({
+      x: (p.x - QUOTE.svgWidth / 2) * scale,
+      y: (p.y - QUOTE.svgHeight / 2) * scale,
+    });
+    const lines = spell.name.split('\n').length;
+    const words = this.add
+      .text(0, 0, spell.name, {
+        fontFamily: 'Oswald',
+        fontStyle: '700',
+        fontSize: lines > 1 ? '27px' : '44px',
+        color: '#03314E',
+        align: 'center',
+        lineSpacing: -2,
+        resolution: RENDER_SCALE,
+      })
+      .setOrigin(0.5);
+    const source = this.add
+      .text(0, 0, spell.source, {
+        fontFamily: 'Oswald',
+        fontStyle: '600',
+        fontSize: '22px',
+        color: '#63A4AF',
+        resolution: RENDER_SCALE,
+      })
+      .setOrigin(0.5);
+    // The words with the source below them, together in the middle of the paper; turned with the paper.
+    const middle = at(QUOTE.text);
+    const turn = (QUOTE.angle * Math.PI) / 180;
+    const along = (d: number) => ({ x: middle.x - Math.sin(turn) * d, y: middle.y + Math.cos(turn) * d });
+    const gap = 6;
+    const total = words.height + gap + source.height;
+    const wordsAt = along(-total / 2 + words.height / 2);
+    const sourceAt = along(total / 2 - source.height / 2);
+    words.setPosition(wordsAt.x, wordsAt.y).setAngle(QUOTE.angle);
+    source.setPosition(sourceAt.x, sourceAt.y).setAngle(QUOTE.angle);
+
+    return this.add.container(0, 0, [card, words, source]);
+  }
+
+
   private drawArrowHead(g: GameObjects.Graphics, from: { x: number; y: number }, to: { x: number; y: number }) {
     const angle = Math.atan2(to.y - from.y, to.x - from.x);
     const size = 30;
@@ -1062,7 +1143,6 @@ export class FantasyScene extends Scene {
     this.spell = undefined;
     this.tweens.add({ targets: spell.view, alpha: 0, scale: 1.15, duration: 350, onComplete: () => spell.view.destroy() });
 
-
     const from = { x: this.wandAt.x, y: this.wandAt.y };
     const target = this.witchChest();
     const onHit = () => {
@@ -1071,8 +1151,10 @@ export class FantasyScene extends Scene {
       this.time.delayedCall(SPELL.nextDelay, () => this.showNextSpell());
     };
 
-    if (spell.def.effect === 'rabbit') {
+    if (spell.def.effect === 'deer') {
       this.patronus(from, target, onHit);
+    } else if (spell.def.effect === 'sword') {
+      this.penToSword(from, target, onHit);
     } else if (spell.def.effect === 'monkeys') {
       this.monkeysAttack(from, target, onHit);
     } else if (spell.def.effect === 'potion') {
@@ -1102,19 +1184,19 @@ export class FantasyScene extends Scene {
     }
   }
 
-  /** Expecto Patronum: a light, see-through rabbit hops from the wand to the witch. */
+  /** Expecto Patronum: a light, a bit see-through deer (hert.svg) leaps from the wand to the witch. */
   private patronus(from: { x: number; y: number }, target: { x: number; y: number }, onHit: () => void) {
-    const rabbit = this.add
+    const deer = this.add
       .image(from.x, from.y - 80, PATRONUS_KEY)
       .setDepth(DEPTH.projectile)
       .setAlpha(0)
       .setScale(0.2 / RENDER_SCALE);
-    const scale = PATRONUS.size / (rabbit.width / RENDER_SCALE) / RENDER_SCALE;
+    const scale = PATRONUS.size / (deer.width / RENDER_SCALE) / RENDER_SCALE;
     // It appears out of the wand...
-    this.tweens.add({ targets: rabbit, alpha: PATRONUS.alpha, scale, duration: 450, ease: 'Back.Out' });
+    this.tweens.add({ targets: deer, alpha: PATRONUS.alpha, scale, duration: 450, ease: 'Back.Out' });
     // ...and hops to the witch in a few big jumps, leaving a trail of light.
-    const trail = this.time.addEvent({ delay: 45, loop: true, callback: () => this.sparkle(rabbit.x, rabbit.y + 60) });
-    const start = { x: rabbit.x, y: rabbit.y };
+    const trail = this.time.addEvent({ delay: 45, loop: true, callback: () => this.sparkle(deer.x, deer.y + 60) });
+    const start = { x: deer.x, y: deer.y };
     this.tweens.addCounter({
       from: 0,
       to: 1,
@@ -1123,17 +1205,51 @@ export class FantasyScene extends Scene {
       onUpdate: (t) => {
         const p = t.getValue() ?? 0;
         const hop = Math.abs(Math.sin(p * Math.PI * PATRONUS.hops));
-        rabbit.x = start.x + (target.x - start.x) * p;
-        rabbit.y = start.y + (target.y - start.y) * p - hop * 90;
+        deer.x = start.x + (target.x - start.x) * p;
+        deer.y = start.y + (target.y - start.y) * p - hop * 90;
         // Squashed a little when it lands, stretched in the air.
-        rabbit.setScale(scale * (1 + (hop - 0.5) * 0.08), scale * (1 + (0.5 - hop) * 0.08 + hop * 0.06));
-        rabbit.angle = Math.cos(p * Math.PI * PATRONUS.hops) * 8;
+        deer.setScale(scale * (1 + (hop - 0.5) * 0.08), scale * (1 + (0.5 - hop) * 0.08 + hop * 0.06));
+        deer.angle = Math.cos(p * Math.PI * PATRONUS.hops) * 8;
       },
       onComplete: () => {
         trail.remove();
         onHit();
         // It fades away in the light.
-        this.tweens.add({ targets: rabbit, alpha: 0, scale: scale * 1.4, duration: 400, onComplete: () => rabbit.destroy() });
+        this.tweens.add({ targets: deer, alpha: 0, scale: scale * 1.4, duration: 400, onComplete: () => deer.destroy() });
+      },
+    });
+  }
+
+  /** Anaklusmos: the pen flies spinning to the witch and turns into a sword on the way. */
+  private penToSword(from: { x: number; y: number }, target: { x: number; y: number }, onHit: () => void) {
+    const ps = PEN_SWORD;
+    const item = this.add.image(from.x, from.y, ps.penKey).setDepth(DEPTH.projectile);
+    const penScale = ps.penSize / item.height;
+    item.setScale(penScale);
+    let sword = false;
+    this.tweens.addCounter({
+      from: 0,
+      to: 1,
+      duration: ps.flyTime,
+      ease: 'Sine.InOut',
+      onUpdate: (t) => {
+        const p = t.getValue() ?? 0;
+        item.x = from.x + (target.x - from.x) * p;
+        item.y = from.y + (target.y - from.y) * p - Math.sin(p * Math.PI) * ps.arc;
+        item.angle = p * 360 * ps.spins;
+        // Halfway: flash, and the pen is a sword.
+        if (!sword && p >= ps.changeAt) {
+          sword = true;
+          this.burst(item.x, item.y);
+          item.setTexture(ps.swordKey);
+          const swordScale = ps.swordSize / item.height;
+          item.setScale(swordScale * 0.6);
+          this.tweens.add({ targets: item, scale: swordScale, duration: 250, ease: 'Back.Out' });
+        }
+      },
+      onComplete: () => {
+        item.destroy();
+        onHit();
       },
     });
   }
@@ -1290,10 +1406,13 @@ export class FantasyScene extends Scene {
     const sprite = this.add.image(from.x, from.y, key).setDepth(DEPTH.projectile);
     const size = kind === 'monkey' ? ATTACK.monkeySize : ATTACK.potionSize;
     const fullScale = size / Math.max(sprite.width, sprite.height);
+    // Start small right away: otherwise it shows at the size of the image file for
+    // one frame (before the flight sets its size), which looks like a flash.
+    sprite.setScale(fullScale * 0.45);
     // The monkey looks to the left in the drawing: flip it when it flies to the right.
     if (kind === 'monkey') sprite.setFlipX(target.x > from.x);
 
-    const attack: Attack = { kind, sprite, marker, tween: undefined, blocked: false };
+    const attack: Attack = { kind, sprite, marker, tween: undefined };
     this.attack = attack;
 
     // Flies in an arch towards the players, getting bigger (it comes closer).
@@ -1309,28 +1428,31 @@ export class FantasyScene extends Scene {
         const flap = kind === 'monkey' ? 1 + Math.sin(p * 40) * 0.08 : 1;
         sprite.setScale(fullScale * (0.45 + 0.55 * p), fullScale * (0.45 + 0.55 * p) * flap);
         if (kind === 'potion') sprite.angle = p * 540;
-        if (p > ATTACK.blockFrom && this.umbrellaBlocks(sprite.x, sprite.y)) this.bounceBack(attack);
       },
+      // Only when it arrives: is the open umbrella on the circle?
       onComplete: () => {
-        if (!attack.blocked) this.attackLands(attack);
+        if (this.umbrellaBlocks(target.x, target.y)) this.bounceBack(attack);
+        else this.attackLands(attack);
       },
     });
   }
 
-  /** Is the open umbrella in the way at this point? */
+  /** Is the open umbrella on this spot (the circle where the attack lands)? */
   private umbrellaBlocks(x: number, y: number) {
     return this.isUmbrellaOpen && PMath.Distance.Between(x, y, this.umbrellaAt.x, this.umbrellaAt.y) < ATTACK.blockRadius;
   }
 
   /** Player 1 caught it with the umbrella: it bounces back to the witch. */
   private bounceBack(attack: Attack) {
-    attack.blocked = true;
     attack.tween?.remove();
     attack.marker.destroy();
     this.shout('Teruggekaatst!', attack.sprite.x, attack.sprite.y - 120, '#FFFFFF', '#2B69B4');
 
-    // The umbrella gets a little push.
+    // The umbrella gets a little push, and then closes by itself.
     this.tweens.add({ targets: this.umbrellaOpen, angle: { from: -12, to: 0 }, duration: 500, ease: 'Elastic.Out' });
+    this.time.delayedCall(ATTACK.closeAfterBounce, () => {
+      if (this.state === 'playing' && this.isUmbrellaOpen) this.toggleUmbrella();
+    });
 
     const target = this.witchChest();
     const sprite = attack.sprite;
@@ -1546,67 +1668,6 @@ export class FantasyScene extends Scene {
         ctx.fillStyle = '#E9E3F8';
         ctx.fill();
         ctx.restore();
-        texture.refresh();
-      }
-    }
-    if (!this.textures.exists(PATRONUS_KEY)) {
-      // A glowing rabbit face (seen from the front), light blue and a bit see-through.
-      const size = 300 * RENDER_SCALE;
-      const texture = this.textures.createCanvas(PATRONUS_KEY, size, size);
-      const ctx = texture?.getContext();
-      if (texture && ctx) {
-        ctx.scale(size / 300, size / 300);
-        ctx.shadowColor = '#7FD8FF';
-        ctx.shadowBlur = 24;
-        ctx.fillStyle = '#E4F6FF';
-        // Long ears, a round head and chubby cheeks.
-        const ellipse = (x: number, y: number, rx: number, ry: number, angle = 0) => {
-          ctx.beginPath();
-          ctx.ellipse(x, y, rx, ry, angle, 0, Math.PI * 2);
-          ctx.fill();
-        };
-        ellipse(112, 82, 26, 72, -0.22);
-        ellipse(188, 82, 26, 72, 0.22);
-        ellipse(150, 182, 82, 74);
-        ellipse(118, 220, 46, 36);
-        ellipse(182, 220, 46, 36);
-        // Inside of the ears: a little lighter.
-        ctx.shadowBlur = 0;
-        ctx.fillStyle = '#B9E8FF';
-        ellipse(113, 88, 12, 50, -0.22);
-        ellipse(187, 88, 12, 50, 0.22);
-        // Eyes, nose and mouth are cut out, so you see through them.
-        ctx.globalCompositeOperation = 'destination-out';
-        ellipse(120, 172, 11, 14);
-        ellipse(180, 172, 11, 14);
-        ctx.beginPath();
-        ctx.moveTo(138, 204);
-        ctx.lineTo(162, 204);
-        ctx.lineTo(150, 216);
-        ctx.closePath();
-        ctx.fill();
-        ctx.lineWidth = 5;
-        ctx.lineCap = 'round';
-        ctx.beginPath();
-        ctx.moveTo(150, 216);
-        ctx.lineTo(150, 228);
-        ctx.quadraticCurveTo(140, 240, 130, 232);
-        ctx.moveTo(150, 228);
-        ctx.quadraticCurveTo(160, 240, 170, 232);
-        ctx.stroke();
-        // Whiskers, sticking out next to the cheeks.
-        ctx.globalCompositeOperation = 'source-over';
-        ctx.strokeStyle = '#E4F6FF';
-        ctx.shadowBlur = 10;
-        ctx.lineWidth = 4;
-        ctx.beginPath();
-        for (const side of [-1, 1]) {
-          for (const dy of [-10, 6]) {
-            ctx.moveTo(150 + side * 70, 214 + dy);
-            ctx.lineTo(150 + side * 128, 206 + dy * 2);
-          }
-        }
-        ctx.stroke();
         texture.refresh();
       }
     }
