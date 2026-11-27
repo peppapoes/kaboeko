@@ -15,8 +15,11 @@ interface Handlers {
 const MAX_BUFFER = 4096;
 
 export class SerialController {
-  /** Which player this controller is (set by the InputManager at its first message). */
-  player?: 1 | 2;
+  /**
+   * Which player each "p" in this port's messages is (set by the InputManager). One port can send
+   * both players (one ESP32 with two sensors); usually p stays p, see InputManager.playerFor.
+   */
+  readonly players = new Map<number, 1 | 2>();
   private reader?: ReadableStreamDefaultReader<string>;
   private closing = false;
 
