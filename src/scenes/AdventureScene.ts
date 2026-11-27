@@ -9,7 +9,7 @@ import { Sea, SEA, waveY } from './adventureSea';
 /*
  * Minigame "avontuur": sail to the treasure island together.
  *
- *  0. Title: "ADVENTURE" with the letters falling in one by one, then the
+ *  0. Title: "AVONTUUR" with the letters falling in one by one, then the
  *     bucket and the red hand come in. Goes on with a button press, or by
  *     itself after a few seconds.
  *  Intro (mini tutorial): the letters go, the bucket and the hand move next to
@@ -142,15 +142,14 @@ const LABEL_WIDTH = 190;
  * how far it is tilted (degrees), and its font size if it differs.
  */
 const TITLE_LETTERS = [
-  { text: 'A', x: 414, y: 696, angle: 4 },
-  { text: 'D', x: 597, y: 755, angle: 0 },
-  { text: 'V', x: 762, y: 685, angle: 0 },
-  { text: 'E', x: 906, y: 749, angle: 4 },
-  { text: 'N', x: 1071, y: 689, angle: 0 },
-  { text: 'T', x: 1224, y: 741, angle: 3 },
-  { text: 'U', x: 1398, y: 801, angle: -4 },
-  { text: 'R', x: 1577, y: 669, angle: -3 },
-  { text: 'E', x: 1756, y: 745, angle: 5 },
+  { text: 'A', x: 478, y: 698, angle: 4 },
+  { text: 'V', x: 652, y: 754, angle: 0 },
+  { text: 'O', x: 829, y: 708, angle: 0 },
+  { text: 'N', x: 1008, y: 750, angle: 4 },
+  { text: 'T', x: 1153, y: 689, angle: 0 },
+  { text: 'U', x: 1299, y: 753, angle: 3 },
+  { text: 'U', x: 1490, y: 777, angle: -4 },
+  { text: 'R', x: 1673, y: 685, angle: -3 },
 ];
 const TITLE_FONT_SIZE = d(338);
 /** Oswald's capitals sit this far (fraction of the font size) above the middle of a text object. */
@@ -161,7 +160,7 @@ const TITLE_LETTER_DELAY = 70;
 const TITLE_TIME = 4500;
 /** Where the bucket and the hand are on the title screen and in the intro. */
 const TOOL_SPOTS = {
-  title: { bucket: { x: d(552), y: d(505) }, hand: { x: d(1570), y: d(912) } },
+  title: { bucket: { x: d(617), y: d(495) }, hand: { x: d(1666), y: d(928) } },
   intro: { bucket: { x: d(754), y: d(746) }, hand: { x: d(1408), y: d(740) } },
 };
 /** The intro sign hangs from the top (its post goes up off the screen). y = top of the image. */
@@ -201,9 +200,9 @@ interface ObstacleDef {
 }
 
 const OBSTACLES: ObstacleDef[] = [
-  { key: 'av-rock1', file: 'background/steen01.svg', originX: 294 / 599, originY: 790 / 801, halfWidth: 170, sunk: 90, bob: 0 },
-  { key: 'av-rock2', file: 'background/steen02.svg', originX: 262 / 535, originY: 1011 / 1022, halfWidth: 140, sunk: 90, bob: 0 },
-  { key: 'av-rock3', file: 'background/steen03.svg', originX: 207 / 424, originY: 1045 / 1056, halfWidth: 120, sunk: 90, bob: 0 },
+  { key: 'av-rock1', file: 'obstakels/steen01.svg', originX: 294 / 599, originY: 790 / 801, halfWidth: 170, sunk: 90, bob: 0 },
+  { key: 'av-rock2', file: 'obstakels/steen02.svg', originX: 262 / 535, originY: 1011 / 1022, halfWidth: 140, sunk: 90, bob: 0 },
+  { key: 'av-rock3', file: 'obstakels/steen03.svg', originX: 207 / 424, originY: 1045 / 1056, halfWidth: 120, sunk: 90, bob: 0 },
   { key: 'av-whale', file: 'obstakels/walvis.svg', originX: 335 / 679, originY: 549 / 676, halfWidth: 190, sunk: 20, bob: 22, keepBottomHidden: true },
   { key: 'av-croc', file: 'obstakels/tik-tok-krokodil.svg', originX: 252 / 512, originY: 616 / 641, halfWidth: 160, sunk: 60, bob: 22, keepBottomHidden: true },
 ];
@@ -370,7 +369,7 @@ export class AdventureScene extends Scene {
 
   preload() {
     const svg = (key: string, file: string) => this.load.svg(key, PATH + file, { scale: loadScale(key) });
-    svg('av-boat', 'background/boot.svg');
+    svg('av-boat', 'controllers/boot.svg');
     svg('av-island', 'background/eiland.svg');
     svg('av-cloud1', 'background/wolk01.svg');
     svg('av-cloud2', 'background/wolk02.svg');
