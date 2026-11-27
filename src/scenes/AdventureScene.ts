@@ -2,12 +2,19 @@ import { GameObjects, Input, Math as PMath, Scene, type Types } from 'phaser';
 import { GAME_HEIGHT, GAME_WIDTH, RENDER_SCALE, setupCamera } from '../config';
 import { inputManager } from '../input/InputManager';
 import { PlayerPointers } from '../playerPointers';
-import { popIn } from '../puppet';
+import { dropIn, popIn, riseIn, setRestAngle, sinkOut, slideIn } from '../puppet';
+import { addStartButton, preloadStartButton } from '../ui';
 import { Sea, SEA, waveY } from './adventureSea';
 
 /*
  * Minigame "avontuur": sail to the treasure island together.
  *
+ *  0. Title: "ADVENTURE" with the letters falling in one by one, then the
+ *     bucket and the red hand come in. Goes on with a button press, or by
+ *     itself after a few seconds.
+ *  Intro (mini tutorial): the letters go, the bucket and the hand move next to
+ *     the cards, the sign comes down and the cards and "druk op een knop" come
+ *     up. A button press starts the game: the boat comes up out of the sea.
  *  1. Sailing. Waves come towards the screen; new ones come up at the back,
  *     sometimes with a rock, the whale or the crocodile on them.
  *     - Player 1 (bucket): water splashes into the boat now and then. Hold the
@@ -128,6 +135,52 @@ const BUCKET_START = { x: d(565), y: d(1150) };
 const LABEL_OFFSET = { bucket: { x: d(200), y: d(-182) }, hand: { x: d(207), y: d(-120) } };
 const LABEL_WIDTH = 190;
 
+// Title and intro.
+
+/**
+ * The title letters (Oswald). Per letter: where its middle is in the design,
+ * how far it is tilted (degrees), and its font size if it differs.
+ */
+const TITLE_LETTERS = [
+  { text: 'A', x: 414, y: 696, angle: 4 },
+  { text: 'D', x: 597, y: 755, angle: 0 },
+  { text: 'V', x: 762, y: 685, angle: 0 },
+  { text: 'E', x: 906, y: 749, angle: 4 },
+  { text: 'N', x: 1071, y: 689, angle: 0 },
+  { text: 'T', x: 1224, y: 741, angle: 3 },
+  { text: 'U', x: 1398, y: 801, angle: -4 },
+  { text: 'R', x: 1577, y: 669, angle: -3 },
+  { text: 'E', x: 1756, y: 745, angle: 5 },
+];
+const TITLE_FONT_SIZE = d(338);
+/** Oswald's capitals sit this far (fraction of the font size) above the middle of a text object. */
+const TITLE_CAP_SHIFT = 0.047;
+/** Time between two letters falling in. */
+const TITLE_LETTER_DELAY = 70;
+/** The title goes on by itself after this many ms (a button press goes on sooner). */
+const TITLE_TIME = 4500;
+/** Where the bucket and the hand are on the title screen and in the intro. */
+const TOOL_SPOTS = {
+  title: { bucket: { x: d(552), y: d(505) }, hand: { x: d(1570), y: d(912) } },
+  intro: { bucket: { x: d(754), y: d(746) }, hand: { x: d(1408), y: d(740) } },
+};
+/** The intro sign hangs from the top (its post goes up off the screen). y = top of the image. */
+const SIGN = { x: GAME_WIDTH / 2, y: -155 };
+/**
+ * The player cards. (x, y) = where the bottom of the stick ends up (below the
+ * screen), origin = that spot in the image, angle = how far the card leans.
+ */
+const CARDS = [
+  { key: 'av-card-p1', file: 'tutorial/bord-speler-1.svg', x: 430, y: 1377, originX: 271 / 557, originY: 961 / 982, angle: -4 },
+  { key: 'av-card-p2', file: 'tutorial/bord-speler-2.svg', x: 1452, y: 1372, originX: 269 / 557, originY: 962 / 983, angle: 6.4 },
+];
+/** The brown "Druk op een knop om te starten" button. */
+const START_BUTTON = { x: GAME_WIDTH / 2, y: 1137, width: 755 };
+/** How far down the boat waits (out of view) during the title and intro. */
+const BOAT_HIDDEN_DROP = 900;
+/** How long (ms) it takes from the intro to the game. */
+const START_TIME = 1600;
+
 interface ObstacleDef {
   key: string;
   file: string;
@@ -192,6 +245,8 @@ const DEPTH = {
   splash: 22,
   overlay: 30,
   book: 31,
+  intro: 35,
+  introButton: 36,
   tools: 40,
   backButton: 50,
 };
@@ -200,7 +255,14 @@ const DEPTH = {
 const LOAD_SCALE: Record<string, number> = { 'av-boat': 1.38, 'av-island': 1.59 };
 const loadScale = (key: string) => LOAD_SCALE[key] ?? RENDER_SCALE;
 
-type State = 'sailing' | 'arriving' | 'chest' | 'opening' | 'done';
+/**
+ * title/intro = busy animating; ...Ready = waiting for a button press;
+ * starting = from the intro to the game; leaving = back to the menu.
+ */
+type MenuState = 'title' | 'titleReady' | 'intro' | 'introReady' | 'starting' | 'leaving';
+const MENU_STATES: readonly string[] = ['title', 'titleReady', 'intro', 'introReady', 'starting', 'leaving'];
+
+type State = MenuState | 'sailing' | 'arriving' | 'chest' | 'opening' | 'done';
 
 interface Obstacle {
   def: ObstacleDef;
@@ -238,7 +300,13 @@ function railY(x: number): number {
 }
 
 export class AdventureScene extends Scene {
-  private state: State = 'sailing';
+  private state: State = 'title';
+  private titleLetters: GameObjects.Container[] = [];
+  /** The sign, the cards and the button of the intro. */
+  private introSign?: GameObjects.Image;
+  private introObjects: GameObjects.Image[] = [];
+  /** The "speler 1 / 2" labels next to the bucket and the hand (shown during the game). */
+  private toolLabels: GameObjects.Image[] = [];
   private sea!: Sea;
   private boat!: GameObjects.Container;
   private wheel!: GameObjects.Image;
@@ -246,8 +314,10 @@ export class AdventureScene extends Scene {
   private pointers!: PlayerPointers;
   private backButton!: GameObjects.Image;
 
-  /** Seconds since the start. */
+  /** Seconds since the scene started (drives the swaying and bobbing). */
   private time0 = 0;
+  /** Seconds the players have been sailing. */
+  private voyageTime = 0;
   /** Sideways position of the boat in the world. */
   private boatX = 0;
   /** How far the boat sits lower because of the water (smoothed). */
@@ -312,6 +382,9 @@ export class AdventureScene extends Scene {
     svg('av-bucket', 'controllers/emmer.svg');
     svg('av-splash1', 'controllers/water-splash01.svg');
     svg('av-splash2', 'controllers/water-splash02.svg');
+    svg('av-sign', 'tutorial/bord-uitleg.svg');
+    CARDS.forEach((card) => svg(card.key, card.file));
+    preloadStartButton(this);
     OBSTACLES.forEach((o) => svg(o.key, o.file));
     // Also as text: recoloured into the full bucket (see makeFullBucket).
     this.load.text('av-bucket-svg', PATH + 'controllers/emmer.svg');
@@ -334,11 +407,15 @@ export class AdventureScene extends Scene {
     inputManager.startRecenter(this);
 
     // Reset state: the same scene object is reused when the scene restarts.
-    this.state = 'sailing';
+    this.state = 'title';
+    this.titleLetters = [];
+    this.introSign = undefined;
+    this.introObjects = [];
     this.time0 = 0;
+    this.voyageTime = 0;
     this.boatX = 0;
     this.sink = 0;
-    this.boatDrop = 0;
+    this.boatDrop = BOAT_HIDDEN_DROP;
     this.jolt = 0;
     this.obstacles = [];
     this.wavesUntilObstacle = 1;
@@ -365,7 +442,9 @@ export class AdventureScene extends Scene {
         .image(cloud.x, cloud.y, cloud.key)
         .setOrigin(cloud.originX, 0)
         .setScale(DESIGN / loadScale(cloud.key))
-        .setDepth(DEPTH.clouds),
+        .setDepth(DEPTH.clouds)
+        // They come down when the game starts.
+        .setVisible(false),
     );
 
     this.buildBoat();
@@ -373,13 +452,14 @@ export class AdventureScene extends Scene {
     this.addBackButton();
 
     // Both players have their own pointer (player 1 controller, player 2 mouse).
-    // During the game they are the bucket and the red hand; at the end, the normal hands.
+    // During the game they are the bucket and the red hand; before and after, the normal hands.
     this.pointers = new PlayerPointers(this);
+    this.pointers.show();
     inputManager.setSplit(this);
-    this.input.setDefaultCursor('none');
 
     this.input.on('pointerdown', this.onPointerDown, this);
     this.input.on('pointerup', this.onPointerUp, this);
+    this.input.on('pointerup', this.pressButton, this);
     this.input.on('pointerupoutside', this.onPointerUp, this);
     this.input.on('pointermove', this.onPointerMove, this);
     inputManager.on('select', this.onSelect, this);
@@ -389,6 +469,7 @@ export class AdventureScene extends Scene {
     this.events.once('shutdown', () => {
       this.input.off('pointerdown', this.onPointerDown, this);
       this.input.off('pointerup', this.onPointerUp, this);
+      this.input.off('pointerup', this.pressButton, this);
       this.input.off('pointerupoutside', this.onPointerUp, this);
       this.input.off('pointermove', this.onPointerMove, this);
       inputManager.off('select', this.onSelect, this);
@@ -397,6 +478,8 @@ export class AdventureScene extends Scene {
       window.removeEventListener('keyup', this.onTestKey, true);
       this.input.setDefaultCursor('default');
     });
+
+    void this.showTitle();
   }
 
   private buildBoat() {
@@ -427,6 +510,12 @@ export class AdventureScene extends Scene {
     this.hand = this.add
       .container(HAND_START.x, HAND_START.y, [this.handImage, label('av-label-p2', LABEL_OFFSET.hand)])
       .setDepth(DEPTH.tools + 1);
+
+    // On the title and intro the cards say who is who: no labels, and the tools come in later.
+    this.toolLabels = [this.bucket.getAt(1), this.hand.getAt(1)] as GameObjects.Image[];
+    this.toolLabels.forEach((image) => image.setVisible(false));
+    this.bucket.setVisible(false);
+    this.hand.setVisible(false);
   }
 
   private addBackButton() {
@@ -440,10 +529,177 @@ export class AdventureScene extends Scene {
         event.stopPropagation();
         // Fade to black, then back to the genre choice in the menu (without the title screen).
         this.input.enabled = false;
+        if (MENU_STATES.includes(this.state)) this.state = 'leaving';
         this.cameras.main.fadeOut(400, 0, 0, 0);
         this.cameras.main.once('camerafadeoutcomplete', () => this.scene.start('MenuScene', { skipTitle: true }));
       });
     popIn(this, this.backButton, { delay: 300 });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Title
+  // ---------------------------------------------------------------------------
+
+  private async showTitle() {
+    await document.fonts.load(`700 ${TITLE_FONT_SIZE}px Oswald`);
+    // The player may have left the scene while the font was loading.
+    if (!this.sys.isActive() || this.state !== 'title') return;
+
+    // Letters fall in one by one, like puppets on a string.
+    // Each letter in its own container, so it can be moved like a puppet.
+    this.titleLetters = TITLE_LETTERS.map((spot, i) => {
+      const text = this.add
+        .text(0, TITLE_FONT_SIZE * TITLE_CAP_SHIFT, spot.text, {
+          fontFamily: 'Oswald',
+          fontSize: `${TITLE_FONT_SIZE}px`,
+          fontStyle: '700',
+          color: '#ffffff',
+          resolution: RENDER_SCALE,
+        })
+        .setOrigin(0.5);
+      const letter = this.add.container(d(spot.x), d(spot.y), [text]).setDepth(DEPTH.intro);
+      setRestAngle(letter, spot.angle);
+      dropIn(this, letter, { delay: 200 + i * TITLE_LETTER_DELAY, distance: 900 });
+      return letter;
+    });
+
+    // Then the bucket and the hand come in. They stay for the intro.
+    const toolsDelay = 400 + this.titleLetters.length * TITLE_LETTER_DELAY;
+    const spots = TOOL_SPOTS.title;
+    this.bucket.setPosition(spots.bucket.x, spots.bucket.y).setVisible(true);
+    this.hand.setPosition(spots.hand.x, spots.hand.y).setVisible(true);
+    slideIn(this, this.bucket, 'left', { delay: toolsDelay, sway: false, onComplete: () => this.scooping() });
+    slideIn(this, this.hand, 'right', { delay: toolsDelay + 150, sway: false, onComplete: () => this.steering() });
+
+    this.time.delayedCall(toolsDelay + 600, () => {
+      if (this.state === 'title') this.state = 'titleReady';
+    });
+    this.time.delayedCall(TITLE_TIME, () => {
+      if (this.state === 'titleReady') this.showIntro();
+    });
+  }
+
+  /** Title and intro: the bucket goes from side to side, as if it scoops. */
+  private scooping() {
+    const { x } = this.bucket;
+    this.tweens.add({
+      targets: this.bucket,
+      x: { from: x, to: x - 30 },
+      angle: { from: 0, to: -12 },
+      duration: 700,
+      yoyo: true,
+      repeat: -1,
+      ease: 'Sine.InOut',
+    });
+  }
+
+  /** Title and intro: the hand moves in a bow, as if it turns the wheel. */
+  private steering() {
+    const { x, y } = this.hand;
+    const timing = { duration: 800, yoyo: true, repeat: -1, ease: 'Sine.InOut' };
+    this.tweens.add({ targets: this.hand, x: { from: x, to: x + 34 }, angle: { from: 0, to: 14 }, ...timing });
+    this.tweens.add({ targets: this.hand, y: { from: y, to: y - 22 }, ...timing, ease: 'Quad.In' });
+  }
+
+  /** Glide the bucket or the hand to a new spot. */
+  private moveTool(tool: GameObjects.Container, spot: { x: number; y: number }, duration: number, then?: () => void) {
+    this.tweens.killTweensOf(tool);
+    this.tweens.add({ targets: tool, x: spot.x, y: spot.y, angle: 0, duration, ease: 'Back.InOut', onComplete: then });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Intro
+  // ---------------------------------------------------------------------------
+
+  private showIntro() {
+    this.state = 'intro';
+
+    // The letters go down, one after the other.
+    const letters = this.titleLetters;
+    this.titleLetters = [];
+    letters.forEach((letter, i) => sinkOut(this, letter, { delay: i * 30, onComplete: () => letter.destroy() }));
+
+    // The bucket and the hand don't leave: they move on to their place next to the cards.
+    this.moveTool(this.bucket, TOOL_SPOTS.intro.bucket, 900, () => this.scooping());
+    this.moveTool(this.hand, TOOL_SPOTS.intro.hand, 900, () => this.steering());
+
+    // The sign comes down from the top once and hangs still (its post stays off the screen).
+    const sign = this.add
+      .image(SIGN.x, SIGN.y - 600, 'av-sign')
+      .setOrigin(0.5, 0)
+      .setScale(DESIGN / RENDER_SCALE)
+      .setDepth(DEPTH.intro);
+    this.tweens.add({ targets: sign, y: SIGN.y, delay: 300, duration: 800, ease: 'Cubic.Out' });
+    this.introSign = sign;
+
+    // The cards come up on their sticks.
+    this.introObjects = CARDS.map((card, i) => {
+      const image = this.add
+        .image(card.x, card.y, card.key)
+        .setOrigin(card.originX, card.originY)
+        .setScale(DESIGN / RENDER_SCALE)
+        .setDepth(DEPTH.intro);
+      setRestAngle(image, card.angle);
+      riseIn(this, image, { delay: 550 + i * 150, distance: 900, gentle: true });
+      return image;
+    });
+
+    this.introObjects.push(
+      addStartButton(this, START_BUTTON.x, START_BUTTON.y, { width: START_BUTTON.width, depth: DEPTH.introButton, delay: 900 }),
+    );
+
+    this.time.delayedCall(1400, () => {
+      if (this.state === 'intro') this.state = 'introReady';
+    });
+  }
+
+  /** "The button": a click, or player 1's controller button / Space. */
+  private pressButton() {
+    if (this.state === 'titleReady') this.showIntro();
+    else if (this.state === 'introReady') this.startGame();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Start of the game
+  // ---------------------------------------------------------------------------
+
+  private startGame() {
+    this.state = 'starting';
+
+    // The intro goes: the sign back up, the cards and the button down.
+    const sign = this.introSign;
+    this.introSign = undefined;
+    if (sign) this.tweens.add({ targets: sign, y: sign.y - 700, duration: 600, ease: 'Back.In', onComplete: () => sign.destroy() });
+    const intro = this.introObjects;
+    this.introObjects = [];
+    intro.forEach((object, i) => sinkOut(this, object, { delay: i * 60, onComplete: () => object.destroy() }));
+
+    // The boat comes up and the clouds come down.
+    this.tweens.add({ targets: this, boatDrop: 0, delay: 400, duration: START_TIME - 500, ease: 'Cubic.Out' });
+    this.clouds.forEach((cloud, i) => {
+      cloud.setVisible(true);
+      this.tweens.add({ targets: cloud, y: { from: cloud.y - 600, to: cloud.y }, delay: 500 + i * 150, duration: 800, ease: 'Cubic.Out' });
+    });
+
+    // The bucket and the hand go to where they start the game.
+    this.moveTool(this.bucket, BUCKET_START, START_TIME - 300);
+    this.moveTool(this.hand, HAND_START, START_TIME - 300);
+
+    // The tools are the cursors now.
+    this.pointers.hide();
+    this.input.setDefaultCursor('none');
+
+    this.time.delayedCall(START_TIME, () => {
+      if (this.state !== 'starting') return;
+      this.state = 'sailing';
+      this.keyboardPos = { ...BUCKET_START };
+      // Player 2's hand waits at the wheel until the mouse moves.
+      this.handMoved = false;
+      this.toolLabels.forEach((image) => {
+        image.setVisible(true);
+        popIn(this, image, { duration: 350 });
+      });
+    });
   }
 
   // ---------------------------------------------------------------------------
@@ -454,6 +710,12 @@ export class AdventureScene extends Scene {
     // At most 50 ms per frame, so nothing jumps after a hiccup.
     const dt = Math.min(delta, 50) / 1000;
     this.time0 += dt;
+
+    if (MENU_STATES.includes(this.state)) {
+      this.updateIdle(dt);
+      return;
+    }
+    if (this.state === 'sailing') this.voyageTime += dt;
 
     this.updateWheel(dt);
     // How far the waves come closer this frame. At the island they stop (the boat has arrived).
@@ -467,9 +729,17 @@ export class AdventureScene extends Scene {
     this.updateBucket(dt);
     this.updateHand();
 
-    if (this.state === 'sailing' && this.time0 >= CONFIG.VOYAGE_TIME && this.obstacles.every((o) => o.passed)) {
+    if (this.state === 'sailing' && this.voyageTime >= CONFIG.VOYAGE_TIME && this.obstacles.every((o) => o.passed)) {
       this.startArrival();
     }
+  }
+
+  /** Title and intro: the sea only rocks gently from side to side. */
+  private updateIdle(dt: number) {
+    // Moved from where it is, so there is no jump when the sailing starts.
+    this.boatX += Math.cos(this.time0 * 0.5) * 20 * dt;
+    this.updateSea(dt, 0);
+    this.updateBoat(dt);
   }
 
   private steer(): number {
@@ -515,7 +785,7 @@ export class AdventureScene extends Scene {
   private onNewWave(wave: number) {
     if (this.state !== 'sailing') return;
     // Only things that can still reach the boat before the island shows up.
-    if (this.time0 < CONFIG.OBSTACLES.firstAfter || this.time0 > CONFIG.VOYAGE_TIME - HIT_P / CONFIG.WAVE_SPEED) return;
+    if (this.voyageTime < CONFIG.OBSTACLES.firstAfter || this.voyageTime > CONFIG.VOYAGE_TIME - HIT_P / CONFIG.WAVE_SPEED) return;
     if (--this.wavesUntilObstacle > 0) return;
     const [min, max] = CONFIG.OBSTACLES.everyWaves;
     this.wavesUntilObstacle = PMath.Between(min, max);
@@ -884,12 +1154,16 @@ export class AdventureScene extends Scene {
 
   /** A click or button press of either player. */
   private onSelect(event: { player?: number }) {
-    if (this.state === 'chest') this.openChest();
+    // On the title and intro, mouse clicks arrive as 'pointerup' (see pressButton).
+    if (MENU_STATES.includes(this.state)) {
+      if (event.player === 1) this.pressButton();
+    } else if (this.state === 'chest') this.openChest();
     else if (this.state === 'sailing' && event.player === 1) this.throwWater();
   }
 
   private onShake(event: { player: number }) {
-    if (this.state === 'chest') this.openChest();
+    if (MENU_STATES.includes(this.state)) this.pressButton();
+    else if (this.state === 'chest') this.openChest();
     else if (this.state === 'sailing' && event.player === 1) this.throwWater();
   }
 
