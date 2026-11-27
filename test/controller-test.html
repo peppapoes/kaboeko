@@ -1,0 +1,449 @@
+<!doctype html>
+<html lang="nl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Controllertest – Kaboeko (2 spelers)</title>
+<!--
+  Standalone test page for the two-player controller (ESP32-S3, 2x MPU-6050).
+  Not part of the game: plain HTML + JS, no build step.
+
+  Open with the dev server (npm run dev -> http://localhost:8080/test/controller-test.html)
+  or with Live Server. Web Serial only works in Chrome/Edge, on localhost or https.
+
+  The controller sends one JSON line per player per tick (115200 baud):
+    {"p":1,"x":12.3,"y":-4.1,"z":87.0,"shake":0,"btn":0}
+  plus {"info":"..."} and {"error":"..."} lines.
+-->
+<style>
+  :root {
+    --blue: #2f6fc0;
+    --red: #d23636;
+    --ink: #1f2a37;
+    --muted: #6b7785;
+    --line: #d9dee5;
+    --bg: #f4f6f9;
+    --card: #ffffff;
+    --ok: #2fae5b;
+    --off: #b8c0ca;
+    --shake: #f0a020;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 24px; background: var(--bg); color: var(--ink);
+    font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  h1 { margin: 0 0 4px; font-size: 22px; }
+  .sub { margin: 0 0 18px; color: var(--muted); }
+
+  /* Connection bar */
+  .bar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 20px; }
+  button {
+    padding: 9px 16px; border: 0; border-radius: 8px; font: inherit; font-weight: 600;
+    background: var(--ink); color: #fff; cursor: pointer;
+  }
+  button.secondary { background: #e3e7ed; color: var(--ink); }
+  button:disabled { opacity: 0.4; cursor: default; }
+  .status { display: inline-flex; align-items: center; gap: 8px; padding: 7px 12px; border-radius: 999px; background: #e3e7ed; font-weight: 600; }
+  .status::before { content: ""; width: 10px; height: 10px; border-radius: 50%; background: var(--off); }
+  .status.connected { background: #dff3e6; color: #1d6b3a; }
+  .status.connected::before { background: var(--ok); }
+  .status.lost { background: #fbe3e3; color: #8f1f1f; }
+  .status.lost::before { background: var(--red); }
+  .hint { color: var(--muted); font-size: 13px; }
+  kbd { padding: 1px 6px; border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; background: #fff; font: 12px ui-monospace, monospace; }
+
+  /* Player panels */
+  .players { display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); gap: 20px; }
+  .panel { background: var(--card); border: 1px solid var(--line); border-top: 6px solid var(--color); border-radius: 12px; padding: 18px; }
+  .panel[data-player="1"] { --color: var(--blue); }
+  .panel[data-player="2"] { --color: var(--red); }
+  .panel-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; }
+  .panel-head h2 { margin: 0; font-size: 19px; color: var(--color); }
+  .live { display: inline-flex; align-items: center; gap: 7px; color: var(--muted); font-size: 13px; }
+  .live .dot { width: 12px; height: 12px; border-radius: 50%; background: var(--off); }
+  .live.on .dot { background: var(--ok); box-shadow: 0 0 0 4px #2fae5b33; }
+  .live.on { color: #1d6b3a; }
+
+  .row { display: flex; gap: 18px; align-items: flex-start; flex-wrap: wrap; }
+  .label { font-size: 12px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 6px; }
+
+  /* Tilt pad: ±45° = edge */
+  .pad {
+    position: relative; width: 200px; height: 200px; border-radius: 10px;
+    background: #f7f9fb; border: 1px solid var(--line);
+  }
+  .pad::before, .pad::after { content: ""; position: absolute; background: var(--line); }
+  .pad::before { left: 50%; top: 0; bottom: 0; width: 1px; }
+  .pad::after { top: 50%; left: 0; right: 0; height: 1px; }
+  .ball {
+    position: absolute; left: 50%; top: 50%; width: 26px; height: 26px; margin: -13px 0 0 -13px;
+    border-radius: 50%; background: var(--color); border: 3px solid #fff; box-shadow: 0 2px 6px #0003;
+    transition: opacity 0.2s;
+  }
+  .pad.stale .ball { opacity: 0.3; }
+  .pad-caption { font-size: 12px; color: var(--muted); margin-top: 6px; width: 200px; display: flex; justify-content: space-between; }
+
+  /* Rotation dial for z */
+  .dial { position: relative; width: 110px; height: 110px; border-radius: 50%; background: #f7f9fb; border: 1px solid var(--line); }
+  .needle {
+    position: absolute; left: 50%; top: 8px; width: 4px; height: 47px; margin-left: -2px;
+    background: var(--color); border-radius: 2px; transform-origin: 50% 100%;
+  }
+  .dial::after { content: ""; position: absolute; left: 50%; top: 50%; width: 10px; height: 10px; margin: -5px; border-radius: 50%; background: var(--ink); }
+
+  /* Shake and button lights */
+  .lights { display: flex; gap: 10px; margin-top: 14px; }
+  .light {
+    flex: 1; text-align: center; padding: 8px 6px; border-radius: 8px; font-weight: 700; font-size: 13px;
+    background: #eef1f5; color: var(--muted); border: 2px solid transparent;
+  }
+  .light.on.btn { background: var(--color); color: #fff; }
+  .light.on.shake { background: var(--shake); color: #fff; animation: flash 0.15s steps(2) infinite; }
+  @keyframes flash { 50% { background: #ffd27a; color: var(--ink); } }
+
+  /* Raw values */
+  .values { width: 100%; margin-top: 14px; border-collapse: collapse; font: 13px ui-monospace, Menlo, monospace; }
+  .values td { padding: 4px 6px; border-top: 1px solid var(--line); }
+  .values td:first-child { color: var(--muted); width: 150px; white-space: nowrap; }
+
+  /* Log */
+  .log-head { display: flex; justify-content: space-between; align-items: center; margin: 24px 0 8px; }
+  .log-head h2 { margin: 0; font-size: 17px; }
+  #log {
+    height: 220px; overflow-y: auto; margin: 0; padding: 10px 12px; border-radius: 10px;
+    background: #111821; color: #c8d2dc; font: 13px/1.5 ui-monospace, Menlo, monospace; white-space: pre-wrap;
+  }
+  #log .time { color: #6f7d8c; }
+  #log .info { color: #9fd3ff; }
+  #log .error { color: #ff8a8a; font-weight: 700; }
+  #log .app { color: #b6e3a8; }
+</style>
+</head>
+<body>
+  <h1>Controllertest – 2 spelers</h1>
+  <p class="sub">ESP32-S3 met twee MPU-6050's, via USB (Web Serial, 115200 baud). Los van de game.</p>
+
+  <div class="bar">
+    <button id="connect">Verbind controller</button>
+    <button id="disconnect" class="secondary" disabled>Verbreek</button>
+    <button id="calibrate" class="secondary">Kalibreer (C)</button>
+    <span id="status" class="status">Niet verbonden</span>
+    <span id="skipped" class="hint"></span>
+    <span class="hint">Druk <kbd>C</kbd> om de huidige kanteling van beide spelers als nul te zetten.</span>
+  </div>
+
+  <div class="players" id="players"></div>
+
+  <div class="log-head">
+    <h2>Log (info en fouten)</h2>
+    <button id="clear-log" class="secondary">Leegmaken</button>
+  </div>
+  <pre id="log"></pre>
+
+  <!-- One panel per player (filled in by the script). -->
+  <template id="panel-template">
+    <section class="panel">
+      <div class="panel-head">
+        <h2></h2>
+        <span class="live"><span class="dot"></span><span class="live-text">geen data</span></span>
+      </div>
+      <div class="row">
+        <div>
+          <div class="label">Kantelen (x / y)</div>
+          <div class="pad stale"><div class="ball"></div></div>
+          <div class="pad-caption"><span>±45° = rand</span><span class="offset-text">geen nul gezet</span></div>
+        </div>
+        <div>
+          <div class="label">Draaien (z)</div>
+          <div class="dial"><div class="needle"></div></div>
+          <div class="lights">
+            <div class="light shake">SHAKE</div>
+            <div class="light btn">KNOP</div>
+          </div>
+        </div>
+      </div>
+      <table class="values">
+        <tr><td>x (voor/achter)</td><td class="v-x">–</td></tr>
+        <tr><td>y (links/rechts)</td><td class="v-y">–</td></tr>
+        <tr><td>z (draaien)</td><td class="v-z">–</td></tr>
+        <tr><td>shake</td><td class="v-shake">–</td></tr>
+        <tr><td>btn</td><td class="v-btn">–</td></tr>
+        <tr><td>berichten/s</td><td class="v-rate">0</td></tr>
+      </table>
+    </section>
+  </template>
+
+<script>
+  // ---------------------------------------------------------------------------
+  // Settings
+  // ---------------------------------------------------------------------------
+  const BAUD_RATE = 115200;
+  /** A player is "live" when a message arrived in the last this many ms. */
+  const LIVE_MS = 500;
+  /** Tilt (degrees) that puts the ball at the edge of the pad. */
+  const PAD_RANGE = 45;
+  /** Flip a direction if the ball moves the wrong way. */
+  const INVERT_X = false; // forward/back tilt -> ball up/down
+  const INVERT_Y = false; // left/right tilt -> ball left/right
+  /** Lines longer than this without a newline are junk: drop them. */
+  const MAX_BUFFER = 4096;
+
+  // ---------------------------------------------------------------------------
+  // State
+  // ---------------------------------------------------------------------------
+  const PLAYERS = [1, 2];
+  /** Latest data, calibration offset and message counter per player. */
+  const players = Object.fromEntries(PLAYERS.map((p) => [p, {
+    data: null,          // last message: { x, y, z, shake, btn }
+    lastSeen: 0,         // performance.now() of the last message
+    offset: null,        // { x, y } set with C, or null
+    count: 0,            // messages since the last rate update
+    rate: 0,             // messages per second
+    ui: null,            // DOM elements of the panel
+  }]));
+
+  let port = null;
+  let reader = null;
+  /** True while the user is closing the port on purpose (so it isn't "connection lost"). */
+  let closingOnPurpose = false;
+  let skippedLines = 0;
+
+  // ---------------------------------------------------------------------------
+  // DOM
+  // ---------------------------------------------------------------------------
+  const $ = (selector, root = document) => root.querySelector(selector);
+  const statusEl = $('#status');
+  const connectBtn = $('#connect');
+  const disconnectBtn = $('#disconnect');
+  const logEl = $('#log');
+
+  for (const p of PLAYERS) {
+    const panel = $('#panel-template').content.firstElementChild.cloneNode(true);
+    panel.dataset.player = p;
+    $('h2', panel).textContent = `Speler ${p}`;
+    $('#players').append(panel);
+    players[p].ui = {
+      live: $('.live', panel),
+      liveText: $('.live-text', panel),
+      pad: $('.pad', panel),
+      ball: $('.ball', panel),
+      offsetText: $('.offset-text', panel),
+      needle: $('.needle', panel),
+      shake: $('.light.shake', panel),
+      btn: $('.light.btn', panel),
+      x: $('.v-x', panel),
+      y: $('.v-y', panel),
+      z: $('.v-z', panel),
+      shakeValue: $('.v-shake', panel),
+      btnValue: $('.v-btn', panel),
+      rate: $('.v-rate', panel),
+    };
+  }
+
+  function setStatus(kind, text) {
+    statusEl.className = `status ${kind}`;
+    statusEl.textContent = text;
+    const connected = kind === 'connected';
+    connectBtn.disabled = connected || !('serial' in navigator);
+    disconnectBtn.disabled = !connected;
+  }
+
+  /** A line in the log, with the time. kind: 'info' | 'error' | 'app' (messages from this page). */
+  function log(kind, text) {
+    const time = new Date().toLocaleTimeString('nl-BE', { hour12: false }) + '.' + String(Date.now() % 1000).padStart(3, '0');
+    const line = document.createElement('div');
+    const timeSpan = document.createElement('span');
+    timeSpan.className = 'time';
+    timeSpan.textContent = time + '  ';
+    const textSpan = document.createElement('span');
+    textSpan.className = kind;
+    textSpan.textContent = (kind === 'error' ? 'FOUT  ' : kind === 'info' ? 'info  ' : '') + text;
+    line.append(timeSpan, textSpan);
+    // Keep scrolling with new lines, unless the user scrolled up to read.
+    const atBottom = logEl.scrollTop + logEl.clientHeight >= logEl.scrollHeight - 5;
+    logEl.append(line);
+    if (atBottom) logEl.scrollTop = logEl.scrollHeight;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Serial
+  // ---------------------------------------------------------------------------
+  async function connect() {
+    try {
+      port = await navigator.serial.requestPort();
+    } catch {
+      return; // the port picker was closed: nothing to do
+    }
+    try {
+      await port.open({ baudRate: BAUD_RATE });
+    } catch (error) {
+      log('app', `Kan de poort niet openen (${error.message}). Staat de Serial Monitor van de Arduino IDE of de game nog open?`);
+      setStatus('lost', 'Kan niet verbinden');
+      port = null;
+      return;
+    }
+    closingOnPurpose = false;
+    skippedLines = 0;
+    setStatus('connected', 'Verbonden');
+    log('app', 'Verbonden.');
+    readLoop(port);
+  }
+
+  async function readLoop(openPort) {
+    const decoder = new TextDecoderStream();
+    // pipeTo ends with an error when the cable is pulled or we cancel: that's expected.
+    const piped = openPort.readable.pipeTo(decoder.writable).catch(() => {});
+    reader = decoder.readable.getReader();
+    let buffer = '';
+
+    try {
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += value;
+        let newline;
+        while ((newline = buffer.indexOf('\n')) >= 0) {
+          const line = buffer.slice(0, newline).trim();
+          buffer = buffer.slice(newline + 1);
+          if (line) handleLine(line);
+        }
+        if (buffer.length > MAX_BUFFER) buffer = '';
+      }
+    } catch (error) {
+      if (!closingOnPurpose) log('app', `Lezen gestopt: ${error.message}`);
+    } finally {
+      reader.releaseLock();
+      reader = null;
+      await piped;
+      try { await openPort.close(); } catch { /* already gone (unplugged) */ }
+      if (port === openPort) port = null;
+      if (closingOnPurpose) {
+        setStatus('', 'Niet verbonden');
+        log('app', 'Verbinding verbroken. De poort is vrij (Arduino IDE kan weer uploaden).');
+      } else {
+        setStatus('lost', 'Verbinding verloren');
+        log('app', 'Verbinding verloren (kabel los of ESP32 herstart?). Klik opnieuw op "Verbind controller".');
+      }
+    }
+  }
+
+  /** Close the port cleanly, so the Arduino IDE can use it again. */
+  async function disconnect() {
+    if (!port) return;
+    closingOnPurpose = true;
+    try { await reader?.cancel(); } catch { /* already closed */ }
+  }
+
+  function handleLine(line) {
+    let message;
+    try {
+      message = JSON.parse(line);
+    } catch {
+      skippedLines++; // half or broken line (e.g. right after connecting)
+      return;
+    }
+    if (!message || typeof message !== 'object') return;
+
+    if (typeof message.info === 'string') return log('info', message.info);
+    if (typeof message.error === 'string') return log('error', message.error);
+
+    const player = players[message.p];
+    if (!player) return;
+    const num = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
+    player.data = { x: num(message.x), y: num(message.y), z: num(message.z), shake: num(message.shake), btn: num(message.btn) };
+    player.lastSeen = performance.now();
+    player.count++;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Calibration (key C)
+  // ---------------------------------------------------------------------------
+  function calibrate() {
+    const done = [];
+    for (const p of PLAYERS) {
+      const player = players[p];
+      if (!player.data || performance.now() - player.lastSeen > LIVE_MS) continue;
+      player.offset = { x: player.data.x, y: player.data.y };
+      done.push(`speler ${p} (x ${player.offset.x.toFixed(1)}, y ${player.offset.y.toFixed(1)})`);
+    }
+    log('app', done.length ? `Nul gezet voor ${done.join(' en ')}.` : 'Kalibreren: geen speler stuurt data.');
+  }
+
+  // ---------------------------------------------------------------------------
+  // Drawing (every frame, from the latest data)
+  // ---------------------------------------------------------------------------
+  const clamp = (v, min, max) => Math.min(Math.max(v, min), max);
+
+  function draw() {
+    const now = performance.now();
+    for (const p of PLAYERS) {
+      const { data, lastSeen, offset, ui } = players[p];
+      const live = !!data && now - lastSeen <= LIVE_MS;
+      ui.live.classList.toggle('on', live);
+      ui.liveText.textContent = live ? 'data' : 'geen data';
+      ui.pad.classList.toggle('stale', !live);
+      if (!data) continue;
+
+      // Tilt relative to the zero (C): y = left/right -> horizontal, x = forward/back -> vertical.
+      const tiltX = data.x - (offset?.x ?? 0);
+      const tiltY = data.y - (offset?.y ?? 0);
+      const half = ui.pad.clientWidth / 2 - 13;
+      const left = (clamp(tiltY, -PAD_RANGE, PAD_RANGE) / PAD_RANGE) * half * (INVERT_Y ? -1 : 1);
+      const top = (-clamp(tiltX, -PAD_RANGE, PAD_RANGE) / PAD_RANGE) * half * (INVERT_X ? -1 : 1);
+      ui.ball.style.transform = `translate(${left}px, ${top}px)`;
+
+      ui.needle.style.transform = `rotate(${data.z}deg)`;
+      ui.shake.classList.toggle('on', live && data.shake === 1);
+      ui.btn.classList.toggle('on', live && data.btn === 1);
+
+      // Raw value, and (after C) the value relative to the zero.
+      const relative = (v) => (offset ? `   (t.o.v. nul: ${v.toFixed(1)}°)` : '');
+      ui.x.textContent = `${data.x.toFixed(1)}°` + relative(tiltX);
+      ui.y.textContent = `${data.y.toFixed(1)}°` + relative(tiltY);
+      ui.z.textContent = `${data.z.toFixed(1)}°`;
+      ui.shakeValue.textContent = data.shake;
+      ui.btnValue.textContent = data.btn;
+      ui.offsetText.textContent = offset ? `nul: ${offset.x.toFixed(1)}, ${offset.y.toFixed(1)}` : 'geen nul gezet';
+    }
+    requestAnimationFrame(draw);
+  }
+
+  // Messages per second, per player.
+  setInterval(() => {
+    for (const p of PLAYERS) {
+      const player = players[p];
+      player.rate = player.count;
+      player.count = 0;
+      player.ui.rate.textContent = player.rate;
+    }
+    $('#skipped').textContent = skippedLines ? `${skippedLines} kapotte regels overgeslagen` : '';
+  }, 1000);
+
+  // ---------------------------------------------------------------------------
+  // Start
+  // ---------------------------------------------------------------------------
+  connectBtn.addEventListener('click', connect);
+  disconnectBtn.addEventListener('click', disconnect);
+  $('#calibrate').addEventListener('click', calibrate);
+  $('#clear-log').addEventListener('click', () => (logEl.textContent = ''));
+  window.addEventListener('keydown', (event) => {
+    if (event.repeat || event.metaKey || event.ctrlKey || event.altKey) return;
+    if (event.key.toLowerCase() === 'c') calibrate();
+  });
+
+  if ('serial' in navigator) {
+    setStatus('', 'Niet verbonden');
+    // The cable is pulled: the read loop notices too, this just makes it quick and clear.
+    navigator.serial.addEventListener('disconnect', (event) => {
+      if (event.target === port) log('app', 'USB-kabel losgekoppeld.');
+    });
+    log('app', 'Klaar. Klik op "Verbind controller" en kies de poort van de ESP32-S3.');
+  } else {
+    setStatus('lost', 'Web Serial niet beschikbaar');
+    log('error', 'Web Serial werkt alleen in Chrome of Edge, op localhost of https.');
+  }
+  requestAnimationFrame(draw);
+</script>
+</body>
+</html>
