@@ -678,8 +678,10 @@ export class AdventureScene extends Scene {
     // The boat comes up and the clouds come down.
     this.tweens.add({ targets: this, boatDrop: 0, delay: 400, duration: START_TIME - 500, ease: 'Cubic.Out' });
     this.clouds.forEach((cloud, i) => {
-      cloud.setVisible(true);
-      this.tweens.add({ targets: cloud, y: { from: cloud.y - 600, to: cloud.y }, delay: 500 + i * 150, duration: 800, ease: 'Cubic.Out' });
+      // Move it up first: the tween only moves it after its delay, so it would show in place for a moment.
+      const restY = cloud.y;
+      cloud.setY(restY - 600).setVisible(true);
+      this.tweens.add({ targets: cloud, y: restY, delay: 500 + i * 150, duration: 800, ease: 'Cubic.Out' });
     });
 
     // The bucket and the hand go to where they start the game.
