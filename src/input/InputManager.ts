@@ -253,11 +253,12 @@ class InputManager extends Events.EventEmitter {
   }
 
   /**
-   * "Point at the star": shows a star in the middle of the screen. As soon as
-   * player 1's controller is held still for a moment, that becomes the center.
-   * Call this at the start of every minigame. Does nothing without a
-   * controller, or in 'rate' mode. The star only shows while the controller
-   * is in use, and goes away when the scene ends.
+   * "Point at the circle": shows a circle in the middle of the screen whose ring
+   * fills up while all players (with an MPU-6050) hold their controller still at the
+   * same time. When it is full (STILL_TIME), those directions become their centers.
+   * Call this at the start of every minigame. Does nothing without a controller,
+   * for a Nunchuk, or in 'rate' mode. It goes away when everyone is done, or when
+   * the scene ends.
    */
   startRecenter(scene?: Scene) {
     if (CFG.CONTROL_MODE !== 'point' || this.controllers.size === 0) return;
@@ -674,9 +675,12 @@ class InputManager extends Events.EventEmitter {
   // Star recentering ("point at the star")
   // ---------------------------------------------------------------------------
 
-  /** Recenter a controller as soon as it has been (almost) still for STILL_TIME (each player on their own). */
+  /**
+   * Keep track of how long this controller has been (almost) still. Everyone is recentered
+   * together, once all players who have to calibrate have held still at the same time for STILL_TIME.
+   */
   private checkStill(state: PlayerState, now: number) {
-    const { STILL_TIME, STILL_TOLERANCE } = CFG.RECENTER;
+    const { STILL_TOLERANCE } = CFG.RECENTER;
     const player = state.player as ControllerPlayer;
     let samples = this.stillSamples.get(player) ?? [];
     const pitch = state[CFG.POINT.PITCH_AXIS];
@@ -689,30 +693,55 @@ class InputManager extends Events.EventEmitter {
     const moved = samples.some((s) => Math.abs(s.pitch - pitch) > STILL_TOLERANCE || Math.abs(s.yaw - yaw) > STILL_TOLERANCE);
     if (moved) samples = [{ time: now, pitch, yaw }];
     this.stillSamples.set(player, samples);
-    if (moved || now - samples[0].time < STILL_TIME) return;
-
-    // Held still long enough: the average of this moment is the new center.
-    const avg = (key: 'pitch' | 'yaw') => samples.reduce((sum, s) => sum + s[key], 0) / samples.length;
-    const centerPitch = avg('pitch');
-    setCenter(
-      state,
-      CFG.POINT.PITCH_AXIS === 'x' ? centerPitch : state.x,
-      CFG.POINT.PITCH_AXIS === 'y' ? centerPitch : state.y,
-      wrapDegrees(avg('yaw')),
-    );
-    this.resetMotion(player);
-    this.ui?.flash(`P${player} calibrated`);
-    this.finishRecenter(player);
+    this.recenterTogether(now);
   }
 
-  /** This player is done with the star; when every controller in use is done, the star goes away. */
+  /** The players who still have to "point at the circle": an MPU-6050 in use, not done yet. */
+  private recenterPlayers(): ControllerPlayer[] {
+    return CONTROLLER_PLAYERS.filter(
+      (p) => this.controllerInUse(p) && this.players.get(p)?.type === 'mpu' && !this.centered.has(p),
+    );
+  }
+
+  /** How long everyone has held still together, as a part of STILL_TIME (0..1): the ring. */
+  private togetherProgress(now: number): number {
+    const players = this.recenterPlayers();
+    if (players.length === 0) return 1;
+    return Math.min(...players.map((p) => this.stillProgress(p, now)));
+  }
+
+  /** When everyone has held still together long enough, the average of that moment becomes each one's center. */
+  private recenterTogether(now: number) {
+    const players = this.recenterPlayers();
+    if (players.length === 0) {
+      this.stopRecenter();
+      return;
+    }
+    if (this.togetherProgress(now) < 1) return;
+
+    for (const player of players) {
+      const state = this.players.get(player);
+      const samples = this.stillSamples.get(player);
+      if (!state || !samples?.length) continue;
+      const avg = (key: 'pitch' | 'yaw') => samples.reduce((sum, s) => sum + s[key], 0) / samples.length;
+      const centerPitch = avg('pitch');
+      setCenter(
+        state,
+        CFG.POINT.PITCH_AXIS === 'x' ? centerPitch : state.x,
+        CFG.POINT.PITCH_AXIS === 'y' ? centerPitch : state.y,
+        wrapDegrees(avg('yaw')),
+      );
+      this.resetMotion(player);
+    }
+    this.ui?.flash('calibrated');
+    this.stopRecenter();
+  }
+
+  /** This player doesn't have to point at the circle (e.g. a Nunchuk); maybe the others are done now. */
   private finishRecenter(player: ControllerPlayer) {
     this.centered.add(player);
     this.stillSamples.delete(player);
-    const waiting = CONTROLLER_PLAYERS.some(
-      (p) => this.controllerInUse(p) && this.players.get(p)?.type === 'mpu' && !this.centered.has(p),
-    );
-    if (!waiting) this.stopRecenter();
+    this.recenterTogether(performance.now());
   }
 
   private stopRecenter() {
@@ -931,14 +960,19 @@ class InputManager extends Events.EventEmitter {
     const sceneHasOwnCursor = canvas.style.cursor === 'none';
     ui.setArrow(tip.x, tip.y, this.mode === 'tilt' && !this.splitScene && !this.mouseOwnsPointer() && !sceneHasOwnCursor);
 
-    // "Point at the star", in the middle of the game.
+    // "Point at the circle", in the middle of the game. Only for an MPU-6050 (the Nunchuk has
+    // no gyro: never a circle for it). The ring fills while everyone holds still together.
     const middle = this.toClient({ x: GAME_WIDTH / 2, y: GAME_HEIGHT / 2 });
     const height = canvas.getBoundingClientRect().height;
-    // Only for an MPU-6050 that still has to point at it (the Nunchuk has no gyro: never a star for it).
-    const waiting = CONTROLLER_PLAYERS.some(
-      (p) => this.controllerInUse(p) && this.players.get(p)?.type === 'mpu' && !this.centered.has(p),
-    );
-    ui.setStar(middle.x, middle.y, height, CFG.RECENTER.TEXT, this.recentering && waiting);
+    const visible = this.recentering && this.recenterPlayers().length > 0;
+    ui.setTarget(middle.x, middle.y, height, CFG.RECENTER.TEXT, visible, this.togetherProgress(performance.now()));
+  }
+
+  /** How long this player has been holding still, as a part of STILL_TIME (0..1). */
+  private stillProgress(player: ControllerPlayer, now: number): number {
+    const samples = this.stillSamples.get(player);
+    if (!samples?.length) return 0;
+    return Math.min(Math.max((now - samples[0].time) / CFG.RECENTER.STILL_TIME, 0), 1);
   }
 
   /** Is this scene in split mode (player 1 on the controller, player 2 on the mouse)? */
