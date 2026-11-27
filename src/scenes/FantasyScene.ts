@@ -133,10 +133,8 @@ const BOOK = {
   closedHeight: 420,
   openKey: 'fantasy-book-open',
   openFile: 'assets/minigame-geschiedenis/book-1.png',
-  /** The book can be clicked open this long (ms) after it appeared (when the clouds are gone). */
-  readyDelay: 1600,
-  /** "druk op een knop om het boek te openen", below the closed book. */
-  hintY: 830,
+  /** The book opens by itself this long (ms) after it appeared (when the clouds are gone). */
+  openDelay: 2200,
 };
 /**
  * The witch's disappearing act (ms): how long she holds her face, and how long
@@ -161,15 +159,6 @@ const POOF_CLOUDS = [
 // The game — tweak these to make it easier/harder or to move things around
 // ---------------------------------------------------------------------------
 
-/** Decoration on the playfield. */
-const PLAYFIELD = {
-  shelves: [
-    { key: 'fantasy-shelf-1', x: 310, bottomY: 292 },
-    { key: 'fantasy-shelf-2', x: 310, bottomY: 525 },
-  ],
-  torch: { x: 1350, bottomY: 420, width: 110 },
-  cauldron: { x: 1580, bottomY: 900, width: 460 },
-};
 
 /** The witch: where her feet are, her size, and how much she can take. */
 const WITCH = { x: 960, bottomY: 960, scale: 0.68, health: 100 };
@@ -187,8 +176,11 @@ const DAMAGE = { bounce: 10, spell: 12 };
 /** How much health the witch gets back when an attack is not caught with the umbrella. */
 const HEAL_ON_MISS = 8;
 
-/** The witch's health bar at the top, with a heart in front. */
-const HEALTH_BAR = { x: 1040, y: 98, width: 820, height: 38, border: 6, heartSize: 96 };
+/**
+ * The witch's health bar, with a heart in front, right above her head.
+ * x = left end of the bar (the heart sits on it).
+ */
+const HEALTH_BAR = { x: 960 - 230 + 20, y: 165, width: 460, height: 28, border: 5, heartSize: 76 };
 
 /** The props the players hold while playing. Sizes in game pixels. */
 const PLAYER_PROPS = {
@@ -266,11 +258,8 @@ const QUOTE = {
   file: 'quote.svg',
   svgWidth: 782,
   svgHeight: 358,
-  /** Width on screen; a spell of 3 lines (De tovenaar van Oz) gets a bigger card, so the text has room. */
+  /** Width on screen. */
   width: 540,
-  widthLong: 700,
-  /** The bigger card sits a bit lower (overlaps the circle more), so it stays clear of the health bar. */
-  overlapLong: 100,
   /** Left/right of the middle of the movement, and how far it overlaps the dark circle (px). */
   x: -20,
   overlap: 55,
@@ -280,8 +269,6 @@ const QUOTE = {
 };
 /** Expecto Patronum: the deer (size = width on screen, alpha = how see-through, runTime = ms to reach the witch). */
 const PATRONUS = { size: 260, alpha: 0.85, runTime: 1100 };
-/** The Golden Cap spell: how many flying monkeys attack the witch, and the time between them. */
-const MONKEY_SPELL = { count: 3, gap: 220, size: 170 };
 
 /** Images that are drawn in code (see makeTextures). */
 const SPARK_KEY = 'fantasy-spark';
@@ -311,7 +298,6 @@ const CLOUD_KEY = 'fantasy-cloud';
 /** Draw order (higher = on top). */
 const DEPTH = {
   background: 0,
-  props: 2,
   marker: 3,
   witch: 4,
   projectile: 5,
@@ -325,7 +311,7 @@ const DEPTH = {
   book: 18,
 };
 
-type State = 'title' | 'titleReady' | 'intro' | 'introReady' | 'busy' | 'playing' | 'bookReady' | 'done';
+type State = 'title' | 'titleReady' | 'intro' | 'introReady' | 'busy' | 'playing' | 'done';
 type AttackKind = 'monkey' | 'potion';
 /** Small drawings on the player cards: the red landing circle, or a spell movement to copy. */
 type CardIcon = 'target' | 'spell';
@@ -367,7 +353,6 @@ export class FantasyScene extends Scene {
   private closedBook?: GameObjects.Image;
   private closedBookScale = 1;
   private bookSparkles?: Time.TimerEvent;
-  private bookHint?: GameObjects.Text;
 
   private umbrellaClosed!: GameObjects.Image;
   private umbrellaOpen!: GameObjects.Image;
@@ -401,17 +386,19 @@ export class FantasyScene extends Scene {
   preload() {
     const svg = (key: string, file: string) => this.load.svg(key, PATH + file, { scale: RENDER_SCALE });
 
-    this.load.image('fantasy-background', PATH + 'fantasyBackground.png');
+    // The empty room, for the title and the explanation.
+    this.load.image('fantasy-background-intro', PATH + 'fantasyBackground.png');
+    // The room while playing (with the shelves, torch and cauldron), as big as the canvas so it stays sharp.
+    this.load.svg('fantasy-background', PATH + 'background.svg', {
+      width: GAME_WIDTH * RENDER_SCALE,
+      height: GAME_HEIGHT * RENDER_SCALE,
+    });
     svg(WITCH_POSES.idle, 'theWitch-poseDown.svg');
     svg(WITCH_POSES.windUp, 'theWitch-poseOneArm.svg');
     svg(WITCH_POSES.attack, 'theWitch-attack.svg');
     svg(WITCH_POSES.hit, 'theWitch-afterAttacked.svg');
     svg('fantasy-monkey', 'monkey.svg');
     svg('fantasy-potion', 'potion1.svg');
-    svg('fantasy-shelf-1', 'potionShelf1.svg');
-    svg('fantasy-shelf-2', 'potionShelf2.svg');
-    svg('fantasy-cauldron', 'couldron.svg');
-    svg('fantasy-torch', 'torch.svg');
     svg('fantasy-wand', 'wand.svg');
     svg('fantasy-umbrella-open', 'umbrellaOpen.svg');
     svg('fantasy-umbrella-closed', 'umbrella-closed.svg');
@@ -431,7 +418,7 @@ export class FantasyScene extends Scene {
 
   create() {
     setupCamera(this);
-    // The background image is partly transparent: dark blue behind it.
+    // Dark blue behind the background (the same colour as its walls).
     this.cameras.main.setBackgroundColor('#03314E');
     // Fade in from black (the menu fades out to black).
     this.cameras.main.fadeIn(600, 0, 0, 0);
@@ -455,12 +442,12 @@ export class FantasyScene extends Scene {
     this.lastSpell = undefined;
     this.closedBook = undefined;
     this.bookSparkles = undefined;
-    this.bookHint = undefined;
     this.heldKeys.clear();
     this.makeTextures();
 
+    // The empty room first; the full room fades in when the game starts (see startGame).
     this.add
-      .image(0, 0, 'fantasy-background')
+      .image(0, 0, 'fantasy-background-intro')
       .setOrigin(0)
       .setDisplaySize(GAME_WIDTH, GAME_HEIGHT)
       .setDepth(DEPTH.background);
@@ -497,7 +484,6 @@ export class FantasyScene extends Scene {
   private pressButton() {
     if (this.state === 'titleReady') this.leaveTitle();
     else if (this.state === 'introReady') this.startGame();
-    else if (this.state === 'bookReady') this.openBook();
   }
 
   /** Player 1's button (controller button or Space): opens/closes the umbrella while playing. */
@@ -793,6 +779,15 @@ export class FantasyScene extends Scene {
     sinkOut(this, cardP2, { delay: 80 });
     // The sign hangs from the top, so it goes back up.
     sinkOut(this, sign, { delay: 160, distance: -600 });
+
+    // The shelves, torch and cauldron appear: the full room fades in over the empty one.
+    const room = this.add
+      .image(0, 0, 'fantasy-background')
+      .setOrigin(0)
+      .setDisplaySize(GAME_WIDTH, GAME_HEIGHT)
+      .setDepth(DEPTH.background)
+      .setAlpha(0);
+    this.tweens.add({ targets: room, alpha: 1, duration: 700, delay: 300 });
     const objects = this.introObjects;
     this.introObjects = [];
 
@@ -826,12 +821,6 @@ export class FantasyScene extends Scene {
   // ---------------------------------------------------------------------------
 
   private buildPlayfield() {
-    for (const shelf of PLAYFIELD.shelves) {
-      this.addProp(shelf.key, shelf.x, shelf.bottomY, 520, DEPTH.props);
-    }
-    this.addProp('fantasy-torch', PLAYFIELD.torch.x, PLAYFIELD.torch.bottomY, PLAYFIELD.torch.width, DEPTH.props);
-    this.addProp('fantasy-cauldron', PLAYFIELD.cauldron.x, PLAYFIELD.cauldron.bottomY, PLAYFIELD.cauldron.width, DEPTH.props);
-
     // The witch, gently swaying (her origin is at her feet).
     this.witch = this.add
       .image(WITCH.x, WITCH.bottomY, WITCH_POSES.idle)
@@ -872,12 +861,6 @@ export class FantasyScene extends Scene {
   private removeGameplayInput() {
     inputManager.off('cursormove', this.moveUmbrella, this);
     this.input.off('pointermove', this.moveWand, this);
-  }
-
-  private addProp(key: string, x: number, bottomY: number, width: number, depth: number): GameObjects.Image {
-    const image = this.add.image(x, bottomY, key).setOrigin(0.5, 1).setDepth(depth);
-    image.setScale(width / image.width);
-    return image;
   }
 
   private addPlayerBadge(text: string, color: number) {
@@ -1002,9 +985,8 @@ export class FantasyScene extends Scene {
     const backdrop = this.add.circle(0, 0, SPELL_AREA.size * SPELL_AREA.backdrop, 0x03314e, 0.5);
     // Above the movement: a quote card (like in geschiedenis) with the spell's words and where they come from.
     const quote = this.makeQuoteCard(spell);
-    const quoteHeight = (QUOTE.svgHeight * this.quoteWidth(spell)) / QUOTE.svgWidth;
-    const overlap = this.quoteWidth(spell) === QUOTE.widthLong ? QUOTE.overlapLong : QUOTE.overlap;
-    quote.setPosition(QUOTE.x, -SPELL_AREA.size * SPELL_AREA.backdrop - quoteHeight / 2 + overlap);
+    const quoteHeight = (QUOTE.svgHeight * QUOTE.width) / QUOTE.svgWidth;
+    quote.setPosition(QUOTE.x, -SPELL_AREA.size * SPELL_AREA.backdrop - quoteHeight / 2 + QUOTE.overlap);
     // White dots with a dark edge, so they show on any background.
     const dotsGraphics = this.add.graphics();
     local.forEach((d) => dotsGraphics.fillStyle(0x03314e, 0.9).fillCircle(d.x, d.y, 10).fillStyle(0xffffff, 1).fillCircle(d.x, d.y, 7));
@@ -1079,14 +1061,9 @@ export class FantasyScene extends Scene {
     spell.start.setVisible(!locked && spell.trace.reached === 0);
   }
 
-  /** How wide the quote card of a spell is: bigger for a long spell. */
-  private quoteWidth(spell: SpellDef): number {
-    return spell.name.split('\n').length >= 3 ? QUOTE.widthLong : QUOTE.width;
-  }
-
   /** The quote card: the spell's words, and where they come from (e.g. "Harry Potter"). */
   private makeQuoteCard(spell: SpellDef): GameObjects.Container {
-    const scale = this.quoteWidth(spell) / QUOTE.svgWidth;
+    const scale = QUOTE.width / QUOTE.svgWidth;
     const card = this.add.image(0, 0, QUOTE.key).setScale(scale / RENDER_SCALE);
     // SVG pixels -> position on the card (whose middle is 0, 0).
     const at = (p: { x: number; y: number }) => ({
@@ -1158,8 +1135,6 @@ export class FantasyScene extends Scene {
       this.patronus(from, target, onHit);
     } else if (spell.def.effect === 'sword') {
       this.penToSword(from, target, onHit);
-    } else if (spell.def.effect === 'monkeys') {
-      this.monkeysAttack(from, target, onHit);
     } else if (spell.def.effect === 'potion') {
       const potion = this.add.image(from.x, from.y, 'fantasy-potion').setDepth(DEPTH.projectile);
       potion.setScale(110 / potion.height);
@@ -1247,27 +1222,6 @@ export class FantasyScene extends Scene {
         onHit();
       },
     });
-  }
-
-  /** The Golden Cap spell: flying monkeys fly at the witch, one after the other. */
-  private monkeysAttack(from: { x: number; y: number }, target: { x: number; y: number }, onHit: () => void) {
-    for (let i = 0; i < MONKEY_SPELL.count; i++) {
-      this.time.delayedCall(i * MONKEY_SPELL.gap, () => {
-        const start = { x: from.x + PMath.Between(-60, 60), y: from.y - 80 - i * 50 };
-        const end = { x: target.x + PMath.Between(-90, 90), y: target.y + PMath.Between(-150, 100) };
-        const monkey = this.add.image(start.x, start.y, 'fantasy-monkey').setDepth(DEPTH.projectile);
-        const scale = MONKEY_SPELL.size / Math.max(monkey.width, monkey.height);
-        monkey.setScale(scale).setFlipX(end.x > start.x);
-        // Flapping wings while it flies.
-        this.tweens.add({ targets: monkey, scaleY: scale * 0.88, duration: 110, yoyo: true, repeat: -1 });
-        this.flyArc(monkey, start, end, 140, 800, () => {
-          this.burst(monkey.x, monkey.y);
-          monkey.destroy();
-          // The witch is hit when the last monkey arrives.
-          if (i === MONKEY_SPELL.count - 1) onHit();
-        });
-      });
-    }
   }
 
   // ---------------------------------------------------------------------------
@@ -1528,7 +1482,7 @@ export class FantasyScene extends Scene {
     });
   }
 
-  /** The closed book appears where the witch was. A button press (or click) opens it. */
+  /** The closed book appears where the witch was, and opens by itself after a moment. */
   private showBook() {
     const chest = this.witchChest();
     // Just behind the clouds: it is there when they shrink away.
@@ -1549,29 +1503,14 @@ export class FantasyScene extends Scene {
     this.closedBook = closed;
     this.closedBookScale = scale;
 
-    // "Open the book": blinking text below it.
-    this.time.delayedCall(BOOK.readyDelay, () => {
-      this.bookHint = this.add
-        .text(GAME_WIDTH / 2, BOOK.hintY, 'druk op een knop om het boek te openen', {
-          fontFamily: 'Oswald',
-          fontStyle: '500',
-          fontSize: '34px',
-          color: '#FFFFFF',
-          resolution: RENDER_SCALE,
-        })
-        .setOrigin(0.5)
-        .setDepth(DEPTH.book)
-        .setAlpha(0);
-      this.tweens.add({ targets: this.bookHint, alpha: { from: 0.25, to: 1 }, duration: 800, yoyo: true, repeat: -1, ease: 'Sine.InOut' });
-      this.state = 'bookReady';
-    });
+    // After a moment (when the clouds are gone) it opens by itself.
+    this.time.delayedCall(BOOK.openDelay, () => this.openBook());
   }
 
   /** Dark background, and the book opens big in the middle (like at the end of geschiedenis). */
   private openBook() {
     this.state = 'done';
     this.bookSparkles?.remove();
-    this.bookHint?.destroy();
     const closed = this.closedBook;
     if (closed) {
       this.tweens.killTweensOf(closed);
