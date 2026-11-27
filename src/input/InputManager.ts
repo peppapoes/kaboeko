@@ -169,6 +169,13 @@ class InputManager extends Events.EventEmitter {
   private lastFrame = performance.now();
   private messageCount = 0;
   private messagesPerSecond = 0;
+  /** Per player: messages since the last count, and messages per second (for the debug panel). */
+  private readonly playerMessages = new Map<number, number>();
+  private readonly playerRates = new Map<number, number>();
+  /** The last {"error": ...} line from a controller, for the debug panel. */
+  private lastError?: { text: string; time: number };
+  /** Which port sends each player's data (one port may send both players). */
+  private readonly playerPorts = new Map<ControllerPlayer, SerialController>();
   private rateStart = performance.now();
   private lastDebug = 0;
 
@@ -313,7 +320,8 @@ class InputManager extends Events.EventEmitter {
     const at = this.motion[2].cursor;
     this.sendMouseEvent('mousedown', button, at);
     this.sendMouseEvent('mouseup', button, at);
-    this.emit('select', { ...at, player: this.splitScene ? MOUSE_PLAYER : undefined });
+    // Always with the player number: this click comes from player 2's controller.
+    this.emit('select', { ...at, player: MOUSE_PLAYER });
   }
 
   /** Is player 2's controller in use (sending data, and not switched to the mouse with T)? */
@@ -525,8 +533,11 @@ class InputManager extends Events.EventEmitter {
       onMessage: (message) => this.onMessage(message, controller),
       onClose: () => {
         this.controllers.delete(controller);
+        // Its players are free again (for a controller that connects later).
+        for (const [player, port] of this.playerPorts) if (port === controller) this.playerPorts.delete(player);
         this.ui?.setConnected(this.controllers.size);
-        this.ui?.flash(controller.player ? `controller P${controller.player} disconnected` : 'controller disconnected');
+        const players = [...new Set(controller.players.values())].sort();
+        this.ui?.flash(players.length ? `controller (${players.map((n) => `P${n}`).join(' + ')}) disconnected` : 'controller disconnected');
       },
     });
     this.controllers.add(controller);
@@ -550,19 +561,26 @@ class InputManager extends Events.EventEmitter {
   }
 
   /**
-   * Which player a controller (port) is: the "p" of its first message, unless another connected
-   * controller already is that player; then it becomes the other one (so two controllers that
-   * both say PLAYER = 1 still become player 1 and 2). Stays the same while it is connected.
+   * Which player a message is: its "p". One port can send both players (one ESP32 with two
+   * sensors), so every line is routed by its own p. Only when another port already sends that
+   * player does this port's p become the other player, so two ESP32s that both say PLAYER = 1
+   * still become player 1 and 2. Stays the same per port and p while connected.
    */
   private playerFor(controller: SerialController, wanted: unknown): ControllerPlayer | undefined {
-    if (controller.player) return controller.player;
     if (wanted !== 1 && wanted !== 2) return undefined;
-    const taken = (player: ControllerPlayer) => [...this.controllers].some((c) => c !== controller && c.player === player);
-    const player: ControllerPlayer = taken(wanted) ? (wanted === 1 ? 2 : 1) : wanted;
-    if (taken(player)) return undefined; // already two controllers
-    controller.player = player;
-    if (player !== wanted) console.info(`[controller] says player ${wanted}, but that one is taken: it is player ${player}`);
-    this.ui?.flash(`controller = P${player}`);
+    const known = controller.players.get(wanted);
+    if (known) return known;
+
+    const takenByOther = (player: ControllerPlayer) => {
+      const port = this.playerPorts.get(player);
+      return !!port && port !== controller && this.controllers.has(port);
+    };
+    const player: ControllerPlayer = takenByOther(wanted) ? (wanted === 1 ? 2 : 1) : wanted;
+    if (takenByOther(player)) return undefined; // both players already come from other ports
+    this.playerPorts.set(player, controller);
+    controller.players.set(wanted, player);
+    if (player !== wanted) console.info(`[controller] a second port says player ${wanted}: it is player ${player}`);
+    this.ui?.flash(`P${player} connected`);
     return player;
   }
 
@@ -573,6 +591,7 @@ class InputManager extends Events.EventEmitter {
     }
     if (typeof message.error === 'string') {
       console.warn('[controller]', message.error);
+      this.lastError = { text: message.error, time: performance.now() };
       return;
     }
 
@@ -586,6 +605,7 @@ class InputManager extends Events.EventEmitter {
 
     const now = performance.now();
     this.messageCount++;
+    this.playerMessages.set(p, (this.playerMessages.get(p) ?? 0) + 1);
 
     let state = this.players.get(p);
     // First data from this controller, or first after a gap: (re)calibrate.
@@ -951,8 +971,13 @@ class InputManager extends Events.EventEmitter {
 
   private updateDebug(now: number) {
     if (now - this.rateStart >= 1000) {
-      this.messagesPerSecond = Math.round((this.messageCount * 1000) / (now - this.rateStart));
+      const seconds = (now - this.rateStart) / 1000;
+      this.messagesPerSecond = Math.round(this.messageCount / seconds);
       this.messageCount = 0;
+      for (const player of CONTROLLER_PLAYERS) {
+        this.playerRates.set(player, Math.round((this.playerMessages.get(player) ?? 0) / seconds));
+        this.playerMessages.set(player, 0);
+      }
       this.rateStart = now;
     }
     if (!this.ui?.debugVisible || now - this.lastDebug < DEBUG_REFRESH_MS) return;
@@ -961,10 +986,10 @@ class InputManager extends Events.EventEmitter {
     const p1 = this.players.get(TILT_PLAYER);
     const nunchuk = p1?.type === 'nunchuk';
     const lines = [
-      `mode      ${this.mode}${this.preferMouse ? ' (mouse chosen with T)' : ''}${this.splitScene ? '   split: P1 controller, P2 mouse' : ''}`,
+      `mode      P1 ${this.mode}${this.preferMouse ? ' (mouse chosen with T)' : ''}${this.splitScene ? '   two-player screen' : '   one-pointer screen'}`,
       `control   ${p1 ? (nunchuk ? `Nunchuk (${CFG.NUNCHUK_CONTROL})` : `MPU-6050 (${CFG.CONTROL_MODE})`) : CFG.CONTROL_MODE}` +
         (this.recentering ? '   waiting: point at the star' : ''),
-      `ports     ${this.controllers.size}   ${this.messagesPerSecond} msg/s`,
+      `ports     ${this.controllers.size}   ${this.messagesPerSecond} msg/s in total`,
       `cursor    ${this.cursor.x.toFixed(0)}, ${this.cursor.y.toFixed(0)}` +
         (nunchuk || CFG.CONTROL_MODE === 'rate' ? `   speed ${this.motion[1].velocity.x.toFixed(0)}, ${this.motion[1].velocity.y.toFixed(0)}` : ''),
       `mouse     ${this.mouse.x.toFixed(0)}, ${this.mouse.y.toFixed(0)}` +
@@ -981,22 +1006,36 @@ class InputManager extends Events.EventEmitter {
       );
     }
 
-    if (this.players.size === 0) lines.push('no controller data yet');
-    for (const s of [...this.players.values()].sort((a, b) => a.player - b.player)) {
+    // Per player: what moves them now (their controller's tilt, or the mouse), and their latest data.
+    lines.push('');
+    for (const player of CONTROLLER_PLAYERS) {
+      const s = this.players.get(player);
+      const tilt = this.controllerInUse(player);
+      const mode = tilt ? 'tilt' : player === TILT_PLAYER ? 'mouse (no data)' : 'mouse (no data: the mouse is player 2)';
+      const rate = `${this.playerRates.get(player) ?? 0} msg/s`;
+      if (!s) {
+        lines.push(`P${player}  ${mode.padEnd(16)}  ${rate}   no data yet`);
+        continue;
+      }
       const age = now - s.lastSeen;
       const seen = age > CFG.TIMEOUT_MS ? 'no data' : `${age.toFixed(0)} ms ago`;
       if (s.type === 'nunchuk') {
         lines.push(
-          `P${s.player} nunchuk  joy ${String(s.jx).padStart(4)}, ${String(s.jy).padStart(4)}  C ${s.bc ? 1 : 0}  Z ${s.bz ? 1 : 0}  shake ${s.shake ? 1 : 0}`,
-          `          tilt x ${s.x.toFixed(1)}  y ${s.y.toFixed(1)}   from middle: ` +
-            `left/right ${tiltFromCenter(s).leftRight.toFixed(1)}  forward/back ${tiltFromCenter(s).forwardBack.toFixed(1)}   ${seen}`,
+          `P${player}  ${mode.padEnd(16)}  ${rate}   nunchuk  joy ${String(s.jx).padStart(4)}, ${String(s.jy).padStart(4)}  C ${s.bc ? 1 : 0}  Z ${s.bz ? 1 : 0}  shake ${s.shake ? 1 : 0}   ${seen}`,
+          `    tilt x ${s.x.toFixed(1)}  y ${s.y.toFixed(1)}   from middle: ` +
+            `left/right ${tiltFromCenter(s).leftRight.toFixed(1)}  forward/back ${tiltFromCenter(s).forwardBack.toFixed(1)}`,
         );
       } else {
         lines.push(
-          `P${s.player} mpu      x ${s.x.toFixed(1)}  y ${s.y.toFixed(1)}  z ${s.z.toFixed(1)}  shake ${s.shake ? 1 : 0}  btn ${s.btn ? 1 : 0}`,
-          `          center ${s.neutralX.toFixed(1)}, ${s.neutralY.toFixed(1)}, ${s.neutralZ.toFixed(1)}   ${seen}`,
+          `P${player}  ${mode.padEnd(16)}  ${rate}   mpu  x ${s.x.toFixed(1)}  y ${s.y.toFixed(1)}  z ${s.z.toFixed(1)}  shake ${s.shake ? 1 : 0}  btn ${s.btn ? 1 : 0}   ${seen}`,
+          `    center ${s.neutralX.toFixed(1)}, ${s.neutralY.toFixed(1)}, ${s.neutralZ.toFixed(1)}` +
+            (player === MOUSE_PLAYER ? `   cursor ${this.motion[2].cursor.x.toFixed(0)}, ${this.motion[2].cursor.y.toFixed(0)}` : ''),
         );
       }
+    }
+    if (this.lastError) {
+      const ago = Math.round((now - this.lastError.time) / 1000);
+      lines.push('', `last error (${ago} s ago): ${this.lastError.text}`);
     }
     lines.push('', 'T mouse/controller  C center  R reset min/max  Space P1 button  D close');
     this.ui.setDebugText(lines.join('\n'));
