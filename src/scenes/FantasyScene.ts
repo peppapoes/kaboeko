@@ -437,8 +437,7 @@ export class FantasyScene extends Scene {
     this.cameras.main.fadeIn(600, 0, 0, 0);
     // Input is switched off while leaving the scene; switch it back on.
     this.input.enabled = true;
-    // Controller in 'point' mode: "point at the star" first, to set the center.
-    inputManager.startRecenter(this);
+    // (The controllers are calibrated on the explanation screen, see showIntro.)
 
     // Reset state: the same scene object is reused when the scene restarts.
     this.state = 'title';
@@ -658,25 +657,32 @@ export class FantasyScene extends Scene {
   private showIntro() {
     this.state = 'intro';
 
+    // The sign comes down from the top and then hangs still.
     const sign = this.makeSign();
-    const cardP2 = this.makeCard(CARDS.p2);
-    const cardP1 = this.makeCard(CARDS.p1);
-
-    // The sign comes down from the top and then hangs still; the cards keep swaying.
     dropIn(this, sign, { delay: 100, distance: 500, sway: false });
-    riseIn(this, cardP2, { delay: 400 });
-    riseIn(this, cardP1, { delay: 550 });
-    this.introObjects = [sign, cardP2, cardP1];
+    this.introObjects = [sign];
 
-    // The brown "Druk op een knop om te starten" button, like geschiedenis.
-    this.introPress = addStartButton(this, START_BUTTON.x, START_BUTTON.y, {
-      width: START_BUTTON.width,
-      depth: DEPTH.card,
-      delay: 900,
-    });
+    // First the players calibrate their controllers ("point at the circle"); then the cards
+    // come up and the game can be started. Without controllers that need it: right away.
+    inputManager.calibrateThen(this, () => {
+      if (!this.sys.isActive() || this.state !== 'intro') return;
+      // The cards keep swaying.
+      const cardP2 = this.makeCard(CARDS.p2);
+      const cardP1 = this.makeCard(CARDS.p1);
+      riseIn(this, cardP2, { delay: 400 });
+      riseIn(this, cardP1, { delay: 550 });
+      this.introObjects = [sign, cardP2, cardP1];
 
-    this.time.delayedCall(1400, () => {
-      if (this.state === 'intro') this.state = 'introReady';
+      // The brown "Druk op een knop om te starten" button, like geschiedenis.
+      this.introPress = addStartButton(this, START_BUTTON.x, START_BUTTON.y, {
+        width: START_BUTTON.width,
+        depth: DEPTH.card,
+        delay: 900,
+      });
+
+      this.time.delayedCall(1400, () => {
+        if (this.state === 'intro') this.state = 'introReady';
+      });
     });
   }
 

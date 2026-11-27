@@ -159,6 +159,8 @@ class InputManager extends Events.EventEmitter {
   private recentering = false;
   private readonly stillSamples = new Map<number, StillSample[]>();
   private readonly centered = new Set<number>();
+  /** What waits for the calibration to be done (calibrateThen). */
+  private recenterDone: (() => void)[] = [];
 
   private readonly players = new Map<number, PlayerState>();
   private readonly controllers = new Set<SerialController>();
@@ -247,18 +249,35 @@ class InputManager extends Events.EventEmitter {
       setCenter(state, state.x, state.y, state.z);
       count++;
     }
-    this.stopRecenter();
+    // Also counts as "point at the circle" done (an intro that waits for it goes on).
+    if (this.recentering) this.finishCalibration();
     this.resetMotion();
     this.ui?.flash(count > 0 ? 'calibrated' : 'no controller data');
   }
 
   /**
+   * Calibrate first, then go on: starts "point at the circle" (see startRecenter) and calls `then`
+   * once every player with an MPU-6050 is calibrated, e.g. to show the explanation cards and allow
+   * starting. Right away when nothing needs calibrating (no controller, only Nunchuks, 'rate' mode);
+   * never when the scene ends first.
+   */
+  calibrateThen(scene: Scene, then: () => void) {
+    this.startRecenter(scene);
+    if (!this.recentering) {
+      then();
+      return;
+    }
+    this.recenterDone.push(then);
+  }
+
+  /**
    * "Point at the circle": shows a circle in the middle of the screen whose ring
-   * fills up while all players (with an MPU-6050) hold their controller still at the
-   * same time. When it is full (STILL_TIME), those directions become their centers.
-   * Call this at the start of every minigame. Does nothing without a controller,
-   * for a Nunchuk, or in 'rate' mode. It goes away when everyone is done, or when
-   * the scene ends.
+   * fills up while all players (with an MPU-6050) point at it, holding their button and
+   * keeping still, at the same time. When it is full (STILL_TIME), those directions
+   * become their centers.
+   * The minigames use calibrateThen (on their explanation screen), which calls this.
+   * Does nothing without a controller, for a Nunchuk, or in 'rate' mode. It goes away
+   * when everyone is done, or when the scene ends.
    */
   startRecenter(scene?: Scene) {
     if (CFG.CONTROL_MODE !== 'point' || this.controllers.size === 0) return;
@@ -676,12 +695,20 @@ class InputManager extends Events.EventEmitter {
   // ---------------------------------------------------------------------------
 
   /**
-   * Keep track of how long this controller has been (almost) still. Everyone is recentered
-   * together, once all players who have to calibrate have held still at the same time for STILL_TIME.
+   * Keep track of how long this player has been pointing at the circle: holding their button and
+   * keeping (almost) still. (The game can't see where a controller points before it is calibrated,
+   * so the button is how the player says "I'm pointing at it now".) Everyone is recentered together,
+   * once all players who have to calibrate have done that at the same time for STILL_TIME.
    */
   private checkStill(state: PlayerState, now: number) {
     const { STILL_TOLERANCE } = CFG.RECENTER;
     const player = state.player as ControllerPlayer;
+    // Button not held: not pointing (yet). Start counting again when it is.
+    const holding = state.type === 'nunchuk' ? state.bz : state.btn;
+    if (!holding) {
+      this.stillSamples.delete(player);
+      return;
+    }
     let samples = this.stillSamples.get(player) ?? [];
     const pitch = state[CFG.POINT.PITCH_AXIS];
     // Yaw relative to the first sample, unwrapped, so ±180° doesn't count as a big jump.
@@ -714,7 +741,7 @@ class InputManager extends Events.EventEmitter {
   private recenterTogether(now: number) {
     const players = this.recenterPlayers();
     if (players.length === 0) {
-      this.stopRecenter();
+      this.finishCalibration();
       return;
     }
     if (this.togetherProgress(now) < 1) return;
@@ -734,7 +761,7 @@ class InputManager extends Events.EventEmitter {
       this.resetMotion(player);
     }
     this.ui?.flash('calibrated');
-    this.stopRecenter();
+    this.finishCalibration();
   }
 
   /** This player doesn't have to point at the circle (e.g. a Nunchuk); maybe the others are done now. */
@@ -744,10 +771,20 @@ class InputManager extends Events.EventEmitter {
     this.recenterTogether(performance.now());
   }
 
+  /** Everyone is calibrated: the circle goes away and whatever waited for it (calibrateThen) goes on. */
+  private finishCalibration() {
+    const done = this.recenterDone;
+    this.recenterDone = [];
+    this.stopRecenter();
+    done.forEach((then) => then());
+  }
+
+  /** Stop "point at the circle" without going on (e.g. the scene ends). */
   private stopRecenter() {
     this.recentering = false;
     this.stillSamples.clear();
     this.centered.clear();
+    this.recenterDone = [];
   }
 
   /**
@@ -799,6 +836,8 @@ class InputManager extends Events.EventEmitter {
       if (!player2) this.ui?.setControllerType(undefined, MOUSE_PLAYER);
     }
     if (player2) this.movePlayer2Cursor(dt);
+    // Waiting for the circle, but nobody (any more) has to point at it: go on.
+    if (this.recentering && !stalled && this.recenterPlayers().length === 0) this.finishCalibration();
 
     this.updatePointers();
     this.updateDebug(now);

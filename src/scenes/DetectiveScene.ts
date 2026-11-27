@@ -338,8 +338,7 @@ export class DetectiveScene extends Scene {
     this.cameras.main.fadeIn(600, 0, 0, 0);
     // Input is switched off while leaving the scene; switch it back on.
     this.input.enabled = true;
-    // Controller in 'point' mode: "point at the star" first, to set the center.
-    inputManager.startRecenter(this);
+    // (The controllers are calibrated on the explanation screen, see showIntro.)
 
     this.state = 'title';
     this.letters = [];
@@ -471,9 +470,10 @@ export class DetectiveScene extends Scene {
     this.letters = [];
     letters.forEach(({ image }, i) => sinkOut(this, image, { delay: i * 30, onComplete: () => image.destroy() }));
 
-    // The tools don't leave: they move to their player's card.
-    this.moveTool(this.net, TOOL_SPOTS.intro.net, (net) => this.netSwish(net));
-    this.moveTool(this.glass, TOOL_SPOTS.intro.glass, (glass) => this.glassCircle(glass));
+    // The tools fade away while the players calibrate (so they look at the circle); afterwards
+    // they come back next to their player's card.
+    const tools = [this.net, this.glass].filter((tool) => tool !== undefined);
+    this.tweens.add({ targets: tools, alpha: 0, duration: 300 });
 
     // The "Help!" sign comes down from the top and hangs still; the cards come up on their sticks.
     const sign = this.add
@@ -483,18 +483,29 @@ export class DetectiveScene extends Scene {
       .setDepth(DEPTH.content);
     dropIn(this, sign, { delay: 300, sway: false });
     this.introObjects.push(sign);
-    this.introObjects.push(addStartButton(this, START_BUTTON.x, START_BUTTON.y, { width: START_BUTTON.width, depth: DEPTH.content, delay: 1000 }));
-    for (const [i, card] of [CARDS.p1, CARDS.p2].entries()) {
-      const image = this.add
-        .image(card.x, BOTTOM_Y, card.key)
-        .setOrigin(0.5, 1)
-        .setScale(card.scale / RENDER_SCALE)
-        .setDepth(DEPTH.content);
-      riseIn(this, image, { delay: 550 + i * 150, gentle: true });
-      this.introObjects.push(image);
-    }
 
-    this.time.delayedCall(1400, () => (this.state = 'introReady'));
+    // First the players calibrate their controllers ("point at the circle"); then the cards
+    // come up and the game can be started. Without controllers that need it: right away.
+    inputManager.calibrateThen(this, () => {
+      if (!this.sys.isActive() || this.state !== 'busy') return;
+      this.moveTool(this.net, TOOL_SPOTS.intro.net, (net) => this.netSwish(net));
+      this.moveTool(this.glass, TOOL_SPOTS.intro.glass, (glass) => this.glassCircle(glass));
+      this.tweens.add({ targets: tools, alpha: 1, duration: 400, delay: 300 });
+      this.introObjects.push(addStartButton(this, START_BUTTON.x, START_BUTTON.y, { width: START_BUTTON.width, depth: DEPTH.content, delay: 1000 }));
+      for (const [i, card] of [CARDS.p1, CARDS.p2].entries()) {
+        const image = this.add
+          .image(card.x, BOTTOM_Y, card.key)
+          .setOrigin(0.5, 1)
+          .setScale(card.scale / RENDER_SCALE)
+          .setDepth(DEPTH.content);
+        riseIn(this, image, { delay: 550 + i * 150, gentle: true });
+        this.introObjects.push(image);
+      }
+
+      this.time.delayedCall(1400, () => {
+        if (this.state === 'busy') this.state = 'introReady';
+      });
+    });
   }
 
   /** Glide a tool to a new spot, then start its movement again. */

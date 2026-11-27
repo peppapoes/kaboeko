@@ -314,8 +314,7 @@ export class KomedieScene extends Scene {
     this.cameras.main.fadeIn(600, 0, 0, 0);
     // Input is switched off while leaving the scene; switch it back on.
     this.input.enabled = true;
-    // Controller in 'point' mode: "point at the star" first, to set the center.
-    inputManager.startRecenter(this);
+    // (The controllers are calibrated on the explanation screen, see showIntro.)
 
     this.state = 'title';
     this.letters = [];
@@ -456,9 +455,10 @@ export class KomedieScene extends Scene {
     this.letters = [];
     letters.forEach((letter, i) => sinkOut(this, letter, { delay: i * 30, onComplete: () => letter.destroy() }));
 
-    // The balloons move next to the cards: blue to player 1, red to player 2.
-    this.moveTool(this.blueBalloon, TOOL_SPOTS.intro.blue, (balloon) => this.float(balloon));
-    this.moveTool(this.balloon, TOOL_SPOTS.intro.red, (balloon) => this.float(balloon));
+    // The balloons fade away while the players calibrate (so they look at the circle); afterwards
+    // they come back next to the cards: blue to player 1, red to player 2.
+    const tools = [this.blueBalloon, this.balloon].filter((tool) => tool !== undefined);
+    this.tweens.add({ targets: tools, alpha: 0, duration: 300 });
 
     // The sign comes down from the top once and hangs still (its post stays off the screen).
     const sign = this.add
@@ -469,21 +469,31 @@ export class KomedieScene extends Scene {
     this.tweens.add({ targets: sign, y: SIGN.y, delay: 300, duration: 800, ease: 'Cubic.Out' });
     this.introObjects.push(sign);
 
-    // The cards come up on their sticks.
-    for (const [i, card] of [CARDS.p1, CARDS.p2].entries()) {
-      const image = this.add
-        .image(card.x, BOTTOM_Y, card.key)
-        .setOrigin(0.5, 1)
-        .setScale(card.scale / RENDER_SCALE)
-        .setDepth(DEPTH.content);
-      riseIn(this, image, { delay: 550 + i * 150, gentle: true });
-      this.introObjects.push(image);
-    }
+    // First the players calibrate their controllers ("point at the circle"); then the cards
+    // come up and the game can be started. Without controllers that need it: right away.
+    inputManager.calibrateThen(this, () => {
+      if (!this.sys.isActive() || this.state !== 'busy') return;
+      this.moveTool(this.blueBalloon, TOOL_SPOTS.intro.blue, (balloon) => this.float(balloon));
+      this.moveTool(this.balloon, TOOL_SPOTS.intro.red, (balloon) => this.float(balloon));
+      this.tweens.add({ targets: tools, alpha: 1, duration: 400, delay: 300 });
+      // The cards come up on their sticks.
+      for (const [i, card] of [CARDS.p1, CARDS.p2].entries()) {
+        const image = this.add
+          .image(card.x, BOTTOM_Y, card.key)
+          .setOrigin(0.5, 1)
+          .setScale(card.scale / RENDER_SCALE)
+          .setDepth(DEPTH.content);
+        riseIn(this, image, { delay: 550 + i * 150, gentle: true });
+        this.introObjects.push(image);
+      }
 
-    const button = addStartButton(this, START_BUTTON.x, START_BUTTON.y, { width: START_BUTTON.width, depth: DEPTH.content, delay: 900 });
-    this.introObjects.push(button);
+      const button = addStartButton(this, START_BUTTON.x, START_BUTTON.y, { width: START_BUTTON.width, depth: DEPTH.content, delay: 900 });
+      this.introObjects.push(button);
 
-    this.time.delayedCall(1400, () => (this.state = 'introReady'));
+      this.time.delayedCall(1400, () => {
+        if (this.state === 'busy') this.state = 'introReady';
+      });
+    });
   }
 
   /** Glide a tool to a new spot, then start its movement again. */

@@ -403,8 +403,7 @@ export class AdventureScene extends Scene {
     this.cameras.main.fadeIn(600, 0, 0, 0);
     // Input is switched off while leaving the scene; switch it back on.
     this.input.enabled = true;
-    // Controller in 'point' mode: "point at the star" first, to set the center.
-    inputManager.startRecenter(this);
+    // (The controllers are calibrated on the explanation screen, see showIntro.)
 
     // Reset state: the same scene object is reused when the scene restarts.
     this.state = 'title';
@@ -619,9 +618,10 @@ export class AdventureScene extends Scene {
     this.titleLetters = [];
     letters.forEach((letter, i) => sinkOut(this, letter, { delay: i * 30, onComplete: () => letter.destroy() }));
 
-    // The bucket and the hand don't leave: they move on to their place next to the cards.
-    this.moveTool(this.bucket, TOOL_SPOTS.intro.bucket, 900, () => this.scooping());
-    this.moveTool(this.hand, TOOL_SPOTS.intro.hand, 900, () => this.steering());
+    // The bucket and the hand fade away while the players calibrate (so they look at the circle);
+    // afterwards they come back, on their place next to the cards.
+    const tools = [this.bucket, this.hand];
+    this.tweens.add({ targets: tools, alpha: 0, duration: 300 });
 
     // The sign comes down from the top once and hangs still (its post stays off the screen).
     const sign = this.add
@@ -632,24 +632,32 @@ export class AdventureScene extends Scene {
     this.tweens.add({ targets: sign, y: SIGN.y, delay: 300, duration: 800, ease: 'Cubic.Out' });
     this.introSign = sign;
 
-    // The cards come up on their sticks.
-    this.introObjects = CARDS.map((card, i) => {
-      const image = this.add
-        .image(card.x, card.y, card.key)
-        .setOrigin(card.originX, card.originY)
-        .setScale(DESIGN / RENDER_SCALE)
-        .setDepth(DEPTH.intro);
-      setRestAngle(image, card.angle);
-      riseIn(this, image, { delay: 550 + i * 150, distance: 900, gentle: true });
-      return image;
-    });
+    // First the players calibrate their controllers ("point at the circle"); then the cards
+    // come up and the game can be started. Without controllers that need it: right away.
+    inputManager.calibrateThen(this, () => {
+      if (!this.sys.isActive() || this.state !== 'intro') return;
+      this.moveTool(this.bucket, TOOL_SPOTS.intro.bucket, 900, () => this.scooping());
+      this.moveTool(this.hand, TOOL_SPOTS.intro.hand, 900, () => this.steering());
+      this.tweens.add({ targets: tools, alpha: 1, duration: 400, delay: 300 });
+      // The cards come up on their sticks.
+      this.introObjects = CARDS.map((card, i) => {
+        const image = this.add
+          .image(card.x, card.y, card.key)
+          .setOrigin(card.originX, card.originY)
+          .setScale(DESIGN / RENDER_SCALE)
+          .setDepth(DEPTH.intro);
+        setRestAngle(image, card.angle);
+        riseIn(this, image, { delay: 550 + i * 150, distance: 900, gentle: true });
+        return image;
+      });
 
-    this.introObjects.push(
-      addStartButton(this, START_BUTTON.x, START_BUTTON.y, { width: START_BUTTON.width, depth: DEPTH.introButton, delay: 900 }),
-    );
+      this.introObjects.push(
+        addStartButton(this, START_BUTTON.x, START_BUTTON.y, { width: START_BUTTON.width, depth: DEPTH.introButton, delay: 900 }),
+      );
 
-    this.time.delayedCall(1400, () => {
-      if (this.state === 'intro') this.state = 'introReady';
+      this.time.delayedCall(1400, () => {
+        if (this.state === 'intro') this.state = 'introReady';
+      });
     });
   }
 

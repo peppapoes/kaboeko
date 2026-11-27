@@ -263,8 +263,7 @@ export class GeschiedenisScene extends Scene {
     this.cameras.main.fadeIn(600, 0, 0, 0);
     // Input is switched off while leaving the scene; switch it back on.
     this.input.enabled = true;
-    // Controller in 'point' mode: "point at the star" first, to set the center.
-    inputManager.startRecenter(this);
+    // (The controllers are calibrated on the explanation screen, see showIntro.)
 
     // Reset state: the same scene object is reused when the scene restarts.
     this.state = 'title';
@@ -476,20 +475,13 @@ export class GeschiedenisScene extends Scene {
   private showIntro() {
     this.state = 'intro';
 
-    // The sign comes down from the top and hangs still; the cards come up and keep swaying.
+    // The sign comes down from the top and hangs still.
     const sign = this.add
       .image(INTRO_SIGN.x, INTRO_SIGN.y, INTRO_SIGN.key)
       .setOrigin(0.5, 0)
       .setScale(INTRO_SIGN.scale / RENDER_SCALE)
       .setDepth(DEPTH.card);
-    const cardP2 = this.addCard(CARDS.introP2);
-    const cardP1 = this.addCard(CARDS.introP1);
     dropIn(this, sign, { delay: 100, sway: false });
-    riseIn(this, cardP2, { delay: 400, gentle: true });
-    riseIn(this, cardP1, { delay: 550, gentle: true });
-
-    // "Druk op een knop om te starten" at the bottom.
-    this.introPress = addStartButton(this, START_BUTTON.x, START_BUTTON.y, { width: START_BUTTON.width, depth: DEPTH.card, delay: 900 });
 
     // The brush and trowel are already here: they came along from the title.
     const brush = this.introBrush ?? this.add.image(0, 0, 'gs-brush');
@@ -497,9 +489,27 @@ export class GeschiedenisScene extends Scene {
     // In front of the cards.
     brush.setDepth(DEPTH.card + 1);
     trowel.setDepth(DEPTH.card + 1);
+    // They fade away while the players calibrate (so they look at the circle), and come back with the cards.
+    this.tweens.add({ targets: [brush, trowel], alpha: 0, duration: 300 });
 
-    this.introObjects = [sign, cardP2, cardP1, brush, trowel];
-    this.time.delayedCall(1400, () => (this.state = 'introReady'));
+    // First the players calibrate their controllers ("point at the circle"); then the cards
+    // come up and the game can be started. Without controllers that need it: right away.
+    inputManager.calibrateThen(this, () => {
+      if (!this.sys.isActive() || this.state !== 'intro') return;
+      this.tweens.add({ targets: [brush, trowel], alpha: 1, duration: 400, delay: 300 });
+      const cardP2 = this.addCard(CARDS.introP2);
+      const cardP1 = this.addCard(CARDS.introP1);
+      riseIn(this, cardP2, { delay: 400, gentle: true });
+      riseIn(this, cardP1, { delay: 550, gentle: true });
+
+      // "Druk op een knop om te starten" at the bottom.
+      this.introPress = addStartButton(this, START_BUTTON.x, START_BUTTON.y, { width: START_BUTTON.width, depth: DEPTH.card, delay: 900 });
+
+      this.introObjects = [sign, cardP2, cardP1, brush, trowel];
+      this.time.delayedCall(1400, () => {
+        if (this.state === 'intro') this.state = 'introReady';
+      });
+    });
   }
 
   private startGame() {

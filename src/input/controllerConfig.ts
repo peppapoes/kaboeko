@@ -73,11 +73,11 @@ export const CONTROLLER_CONFIG = {
     DEAD_ZONE: 1,
   },
 
-  /** Recentering at the start of a minigame ("point at the circle": its ring fills while all players hold still together). */
+  /** Recentering on the explanation screen ("point at the circle": its ring fills while all players point at it, holding their button and keeping still, together). */
   RECENTER: {
     /** Text above the circle. */
-    TEXT: 'Wijs naar de cirkel!',
-    /** How long the controllers must be held still, all at the same time (ms). */
+    TEXT: 'Wijs naar de cirkel en hou je knop ingedrukt!',
+    /** How long everyone must point at it (button held, still), all at the same time (ms). */
     STILL_TIME: 1000,
     /** "Still" = pitch and yaw stay within this many degrees during STILL_TIME. */
     STILL_TOLERANCE: 2.5,
