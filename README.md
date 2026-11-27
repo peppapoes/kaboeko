@@ -79,7 +79,7 @@ De Arduino-sketch staat in `hardware/kaboeko_mpu6050/`.
   Dan vuurt de spreuk op de heks. Zolang de paraplu open is,
   kan speler 2 geen spreuk doen ("Wacht! De paraplu is open"). Elke treffer laat haar
   levensbalk zakken. Bij nul verdwijnt de heks in rook, komt het
-  boek van geschiedenis tevoorschijn. Een knop of klik opent het boek (zoals bij geschiedenis).
+  boek van geschiedenis tevoorschijn, dat even later vanzelf opengaat.
   **Testen zonder controller:** speler 1 speelt dan met het toetsenbord:
   `WASD` (of de pijltjes) beweegt de paraplu, `Spatie`/`Enter` is de knop
   (paraplu open/dicht, verder naar de volgende stap). Speler 2 blijft op de

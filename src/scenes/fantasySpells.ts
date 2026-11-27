@@ -23,11 +23,10 @@ export interface SpellDef {
    * What the spell does:
    * - star: a magic star flies to the witch
    * - potion: a potion bottle is thrown at the witch
-   * - monkeys: flying monkeys attack the witch (the Golden Cap spell from The Wizard of Oz calls them)
    * - deer: a deer (a Patronus) goes at the witch
    * - sword: a pen is thrown and turns into a sword halfway (Percy Jackson's Riptide)
    */
-  effect: 'star' | 'potion' | 'monkeys' | 'deer' | 'sword';
+  effect: 'star' | 'potion' | 'deer' | 'sword';
   /**
    * The movement, from start to end. Coordinates from -1 to 1
    * (x: left -> right, y: top -> bottom); scaled to the spell area on screen.
@@ -74,15 +73,6 @@ export const SPELLS: SpellDef[] = [
     effect: 'deer',
     // A wave, from left to right.
     shape: wave(1.5, 0.45, 30),
-  },
-  {
-    // The Golden Cap spell from The Wizard of Oz: one spell in three parts.
-    name: 'Ep-pe, pep-pe, kak-ke!\nHil-lo, hol-lo, hel-lo!\nZiz-zy, zuz-zy, zik!',
-    source: 'De tovenaar van Oz',
-    effect: 'monkeys',
-    // A circle, starting at the top, going right (clockwise). It stops just before
-    // the start, so the end (the arrow) doesn't cover the start dot.
-    shape: arc(-90, 240, 28),
   },
   {
     // Percy Jackson's pen that turns into a sword: Anaklusmos ("Riptide"), in the Dutch books "Doemtij".
