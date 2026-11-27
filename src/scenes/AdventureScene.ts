@@ -3,7 +3,6 @@ import { GAME_HEIGHT, GAME_WIDTH, RENDER_SCALE, setupCamera } from '../config';
 import { inputManager } from '../input/InputManager';
 import { PlayerPointers } from '../playerPointers';
 import { dropIn, popIn, riseIn, setRestAngle, sinkOut, slideIn } from '../puppet';
-import { addStartButton, preloadStartButton } from '../ui';
 import { Sea, SEA, waveY } from './adventureSea';
 
 /*
@@ -13,8 +12,13 @@ import { Sea, SEA, waveY } from './adventureSea';
  *     bucket and the red hand come in. Goes on with a button press, or by
  *     itself after a few seconds.
  *  Intro (mini tutorial): the letters go, the bucket and the hand move next to
- *     the cards, the sign comes down and the cards and "druk op een knop" come
- *     up. A button press starts the game: the boat comes up out of the sea.
+ *     the cards, the sign comes down and the cards come up. Then both players
+ *     try their job once, with the bucket and the hand as their cursors:
+ *     - player 1 fills the bucket on a puddle, lifts it up and presses the
+ *       button (or shakes);
+ *     - player 2 grabs a small wheel and turns it to the left and to the right.
+ *     When both did it, the intro goes, the boat comes up out of the sea,
+ *     "Hou je klaar!" and 3, 2, 1, and the game starts.
  *  1. Sailing. Waves come towards the screen; new ones come up at the back,
  *     sometimes with a rock, the whale or the crocodile on them.
  *     - Player 1 (bucket): water splashes into the boat now and then. Hold the
@@ -107,7 +111,7 @@ const PIVOT = { x: GAME_WIDTH / 2, y: GAME_HEIGHT };
 /** Top middle of boot.svg (the top of the mast), relative to the pivot. */
 const BOAT = { x: d(1083) - PIVOT.x, y: d(545) - PIVOT.y, originX: 1475 / 2958 };
 /** The middle of the wheel, relative to the pivot, and where that is inside stuur.svg. */
-const WHEEL = { x: d(1078) - PIVOT.x, y: d(1118) - PIVOT.y, originX: 317 / 638, originY: 301 / 641 };
+const WHEEL = { x: d(1078) - PIVOT.x, y: d(1118) - PIVOT.y, originX: 293.57 / 594, originY: 288.7 / 590 };
 
 /** The clouds hang on their strings: x = the string, y = top of the image. */
 const CLOUDS = [
@@ -175,11 +179,33 @@ const CARDS = [
   { key: 'av-card-p1', file: 'tutorial/bord-speler-1.svg', x: 430, y: 1377, originX: 271 / 557, originY: 961 / 982, angle: -4 },
   { key: 'av-card-p2', file: 'tutorial/bord-speler-2.svg', x: 1452, y: 1372, originX: 269 / 557, originY: 962 / 983, angle: 6.4 },
 ];
-/** The brown "Druk op een knop om te starten" button. */
-const START_BUTTON = { x: GAME_WIDTH / 2, y: 1137, width: 755 };
+/**
+ * The mini tutorial, below the cards. Player 1: fill the bucket on the puddle,
+ * lift it above `throwAbove` and press. Player 2: turn the small wheel at least
+ * `turn` degrees to the left and to the right.
+ */
+const PRACTICE = {
+  puddle: { x: 430, y: 1015, throwAbove: 820 },
+  /** size = compared to the wheel on the boat. */
+  wheel: { x: 1452, y: 1005, size: 0.55, grabRadius: 210, turn: 70 },
+  hintY: 1185,
+  hints: {
+    fill: 'Hou de emmer op de plas',
+    throw: 'Til de emmer op en druk op de knop',
+    steer: 'Pak het stuur en draai links en rechts',
+    done: 'Goed zo!',
+  },
+  waitText: { text: 'Probeer het eerst allebei even!', y: 1075 },
+  /** After both are done, this long (ms) before the intro goes. */
+  doneDelay: 900,
+};
+const PRACTICE_FONT = 'Andika';
+const PLAYER_COLOR = { p1: 0x2b69b4, p2: 0xd23636 };
+/** Before the game: "Hou je klaar!", then 3, 2, 1, then "Start!" (like in fantasie). Times in ms. */
+const COUNTDOWN = { text: 'Hou je klaar!', numbers: ['3', '2', '1'], go: 'Start!', y: 300, readyTime: 1300, numberTime: 850 };
 /** How far down the boat waits (out of view) during the title and intro. */
 const BOAT_HIDDEN_DROP = 900;
-/** How long (ms) it takes from the intro to the game. */
+/** How long (ms) the boat and the tools take to get in place after the intro. */
 const START_TIME = 1600;
 
 interface ObstacleDef {
@@ -247,7 +273,7 @@ const DEPTH = {
   overlay: 30,
   book: 31,
   intro: 35,
-  introButton: 36,
+  practice: 36,
   tools: 40,
   backButton: 50,
 };
@@ -257,11 +283,12 @@ const LOAD_SCALE: Record<string, number> = { 'av-boat': 1.38, 'av-island': 1.59 
 const loadScale = (key: string) => LOAD_SCALE[key] ?? RENDER_SCALE;
 
 /**
- * title/intro = busy animating; ...Ready = waiting for a button press;
+ * title/intro = busy animating; titleReady = waiting for a button press;
+ * tutorial = both players try their job once;
  * starting = from the intro to the game; leaving = back to the menu.
  */
-type MenuState = 'title' | 'titleReady' | 'intro' | 'introReady' | 'starting' | 'leaving';
-const MENU_STATES: readonly string[] = ['title', 'titleReady', 'intro', 'introReady', 'starting', 'leaving'];
+type MenuState = 'title' | 'titleReady' | 'intro' | 'tutorial' | 'starting' | 'leaving';
+const MENU_STATES: readonly string[] = ['title', 'titleReady', 'intro', 'tutorial', 'starting', 'leaving'];
 
 type State = MenuState | 'sailing' | 'arriving' | 'chest' | 'opening' | 'done';
 
@@ -284,6 +311,20 @@ interface Puddle {
   buckets: number;
 }
 
+/** The mini tutorial in the intro: what each player has to try once. */
+interface Practice {
+  puddle: GameObjects.Image;
+  wheel: GameObjects.Image;
+  p1Hint: GameObjects.Text;
+  p2Hint: GameObjects.Text;
+  waitText: GameObjects.Text;
+  checks: GameObjects.Container[];
+  turnedLeft: boolean;
+  turnedRight: boolean;
+  p1Done: boolean;
+  p2Done: boolean;
+}
+
 /** Where a splash of water may be: not too close to the sides of the screen. */
 function keepOffSides(x: number): number {
   const margin = CONFIG.WATER.splashEdgeMargin;
@@ -304,6 +345,7 @@ export class AdventureScene extends Scene {
   private state: State = 'title';
   private titleLetters: GameObjects.Container[] = [];
   /** The sign, the cards and the button of the intro. */
+  private practice?: Practice;
   private introSign?: GameObjects.Image;
   private introObjects: GameObjects.Image[] = [];
   /** The "speler 1 / 2" labels next to the bucket and the hand (shown during the game). */
@@ -352,6 +394,8 @@ export class AdventureScene extends Scene {
   // Player 2: the hand on the wheel
   private hand!: GameObjects.Container;
   private handImage!: GameObjects.Image;
+  /** Where the hand waits until the mouse moves. */
+  private handRest: { x: number; y: number } = HAND_START;
   private handMoved = false;
   /** How far the wheel is turned (degrees, + = to the right). */
   private wheelAngle = 0;
@@ -386,7 +430,6 @@ export class AdventureScene extends Scene {
     PUDDLE_KEYS.forEach((key, i) => svg(key, `controllers/water0${i + 1}.svg`));
     svg('av-sign', 'tutorial/bord-uitleg.svg');
     CARDS.forEach((card) => svg(card.key, card.file));
-    preloadStartButton(this);
     OBSTACLES.forEach((o) => svg(o.key, o.file));
     // Also as text: recoloured into the full bucket (see makeFullBucket).
     this.load.text('av-bucket-svg', PATH + 'controllers/emmer.svg');
@@ -413,6 +456,7 @@ export class AdventureScene extends Scene {
     this.titleLetters = [];
     this.introSign = undefined;
     this.introObjects = [];
+    this.practice = undefined;
     this.time0 = 0;
     this.voyageTime = 0;
     this.boatX = 0;
@@ -543,6 +587,8 @@ export class AdventureScene extends Scene {
 
   private async showTitle() {
     await document.fonts.load(`700 ${TITLE_FONT_SIZE}px Oswald`);
+    // For the tutorial texts later on.
+    void document.fonts.load(`700 30px ${PRACTICE_FONT}`);
     // The player may have left the scene while the font was loading.
     if (!this.sys.isActive() || this.state !== 'title') return;
 
@@ -645,19 +691,149 @@ export class AdventureScene extends Scene {
       return image;
     });
 
-    this.introObjects.push(
-      addStartButton(this, START_BUTTON.x, START_BUTTON.y, { width: START_BUTTON.width, depth: DEPTH.introButton, delay: 900 }),
-    );
-
+    // When the cards are up: the mini tutorial.
     this.time.delayedCall(1400, () => {
-      if (this.state === 'intro') this.state = 'introReady';
+      if (this.state === 'intro') this.startTutorial();
     });
   }
 
   /** "The button": a click, or player 1's controller button / Space. */
   private pressButton() {
     if (this.state === 'titleReady') this.showIntro();
-    else if (this.state === 'introReady') this.startGame();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Mini tutorial
+  // ---------------------------------------------------------------------------
+
+  /** The bucket and the hand become the players' cursors, and each player tries their job once. */
+  private startTutorial() {
+    this.state = 'tutorial';
+
+    // They take over from where they are now.
+    for (const tool of [this.bucket, this.hand]) {
+      this.tweens.killTweensOf(tool);
+      tool.setAngle(0);
+    }
+    this.keyboardPos = { x: this.bucket.x, y: this.bucket.y };
+    this.handRest = { x: this.hand.x, y: this.hand.y };
+    this.handMoved = false;
+    this.pointers.hide();
+    this.input.setDefaultCursor('none');
+
+    const puddle = this.add
+      .image(PRACTICE.puddle.x, PRACTICE.puddle.y, PUDDLE_KEYS[1])
+      .setScale(this.puddleScale(2))
+      .setDepth(DEPTH.practice);
+    popIn(this, puddle, { delay: 200 });
+    const wheel = this.add
+      .image(PRACTICE.wheel.x, PRACTICE.wheel.y, 'av-wheel')
+      .setOrigin(WHEEL.originX, WHEEL.originY)
+      .setScale((PRACTICE.wheel.size * DESIGN) / RENDER_SCALE)
+      .setDepth(DEPTH.practice);
+    popIn(this, wheel, { delay: 350 });
+
+    const text = (x: number, y: number, content: string, size: number) => {
+      const label = this.add
+        .text(x, y, content, {
+          fontFamily: PRACTICE_FONT,
+          fontStyle: '700',
+          fontSize: `${size}px`,
+          color: '#FFFFFF',
+          resolution: RENDER_SCALE,
+        })
+        .setOrigin(0.5)
+        .setDepth(DEPTH.practice)
+        .setAlpha(0);
+      this.tweens.add({ targets: label, alpha: 1, duration: 400, delay: 500 });
+      return label;
+    };
+
+    this.practice = {
+      puddle,
+      wheel,
+      p1Hint: text(PRACTICE.puddle.x, PRACTICE.hintY, PRACTICE.hints.fill, 30),
+      p2Hint: text(PRACTICE.wheel.x, PRACTICE.hintY, PRACTICE.hints.steer, 30),
+      waitText: text(GAME_WIDTH / 2, PRACTICE.waitText.y, PRACTICE.waitText.text, 34),
+      checks: [],
+      turnedLeft: false,
+      turnedRight: false,
+      p1Done: false,
+      p2Done: false,
+    };
+  }
+
+  private updateTutorial(dt: number) {
+    this.updateWheel(dt);
+    this.updatePracticeWheel();
+    this.updateBucket(dt);
+    this.updateHand();
+  }
+
+  /** Player 2: has the wheel been turned far enough to both sides? */
+  private updatePracticeWheel() {
+    const practice = this.practice;
+    if (!practice) return;
+    practice.wheel.angle = this.wheelAngle;
+    if (practice.p2Done) return;
+
+    if (this.wheelAngle <= -PRACTICE.wheel.turn) practice.turnedLeft = true;
+    if (this.wheelAngle >= PRACTICE.wheel.turn) practice.turnedRight = true;
+    if (!practice.turnedLeft || !practice.turnedRight) return;
+
+    practice.p2Done = true;
+    practice.p2Hint.setText(PRACTICE.hints.done);
+    this.addCheck(PRACTICE.wheel.x + 150, PRACTICE.wheel.y - 130, PLAYER_COLOR.p2);
+    this.checkPracticeDone();
+  }
+
+  /** Player 1: the bucket was filled and emptied. */
+  private finishPracticeBucket() {
+    const practice = this.practice;
+    if (!practice || practice.p1Done) return;
+    practice.p1Done = true;
+    practice.p1Hint.setText(PRACTICE.hints.done);
+    this.addCheck(PRACTICE.puddle.x + 190, PRACTICE.puddle.y - 90, PLAYER_COLOR.p1);
+    this.checkPracticeDone();
+  }
+
+  /** A check mark in a white circle: this player did their part. */
+  private addCheck(x: number, y: number, color: number) {
+    const mark = this.add
+      .graphics()
+      .fillStyle(0xffffff, 1)
+      .fillCircle(0, 0, 40)
+      .lineStyle(6, color, 1)
+      .strokeCircle(0, 0, 40)
+      .lineStyle(10, color, 1)
+      .beginPath()
+      .moveTo(-18, 2)
+      .lineTo(-5, 16)
+      .lineTo(20, -14)
+      .strokePath();
+    const check = this.add.container(x, y, [mark]).setDepth(DEPTH.practice + 1);
+    popIn(this, check);
+    this.practice?.checks.push(check);
+  }
+
+  /** Both tried it: after a moment the intro goes and the game starts. */
+  private checkPracticeDone() {
+    const practice = this.practice;
+    if (!practice || !practice.p1Done || !practice.p2Done) return;
+    this.time.delayedCall(PRACTICE.doneDelay, () => {
+      if (this.state === 'tutorial') this.startGame();
+    });
+  }
+
+  private removePractice() {
+    const practice = this.practice;
+    this.practice = undefined;
+    if (!practice) return;
+    const { puddle, wheel, p1Hint, p2Hint, waitText, checks } = practice;
+    for (const object of [puddle, wheel, p1Hint, p2Hint, waitText, ...checks]) {
+      this.tweens.killTweensOf(object);
+      this.tweens.add({ targets: object, alpha: 0, duration: 300, onComplete: () => object.destroy() });
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -667,7 +843,16 @@ export class AdventureScene extends Scene {
   private startGame() {
     this.state = 'starting';
 
-    // The intro goes: the sign back up, the cards and the button down.
+    this.removePractice();
+    // The wheel and the bucket start the game straight and empty.
+    this.grab = undefined;
+    this.wheelAngle = 0;
+    this.wheel.angle = 0;
+    this.filling = 0;
+    this.emptyBucket();
+    this.bucketImage.angle = 0;
+
+    // The intro goes: the sign back up, the cards down.
     const sign = this.introSign;
     this.introSign = undefined;
     if (sign) this.tweens.add({ targets: sign, y: sign.y - 700, duration: 600, ease: 'Back.In', onComplete: () => sign.destroy() });
@@ -688,20 +873,49 @@ export class AdventureScene extends Scene {
     this.moveTool(this.bucket, BUCKET_START, START_TIME - 300);
     this.moveTool(this.hand, HAND_START, START_TIME - 300);
 
-    // The tools are the cursors now.
-    this.pointers.hide();
-    this.input.setDefaultCursor('none');
+    this.time.delayedCall(700, () =>
+      this.countdown(() => {
+        if (this.state !== 'starting') return;
+        this.state = 'sailing';
+        this.keyboardPos = { ...BUCKET_START };
+        // Player 2's hand waits at the wheel until the mouse moves.
+        this.handRest = HAND_START;
+        this.handMoved = false;
+        this.toolLabels.forEach((image) => {
+          image.setVisible(true);
+          popIn(this, image, { duration: 350 });
+        });
+      }),
+    );
+  }
 
-    this.time.delayedCall(START_TIME, () => {
-      if (this.state !== 'starting') return;
-      this.state = 'sailing';
-      this.keyboardPos = { ...BUCKET_START };
-      // Player 2's hand waits at the wheel until the mouse moves.
-      this.handMoved = false;
-      this.toolLabels.forEach((image) => {
-        image.setVisible(true);
-        popIn(this, image, { duration: 350 });
+  /** "Hou je klaar!", then 3, 2, 1 (big, in the middle), then "Start!", and when that goes: `then`. */
+  private countdown(then: () => void) {
+    const steps = [COUNTDOWN.text, ...COUNTDOWN.numbers, COUNTDOWN.go];
+    let delay = 0;
+    steps.forEach((step, i) => {
+      const isNumber = i > 0 && i <= COUNTDOWN.numbers.length;
+      const time = isNumber ? COUNTDOWN.numberTime : COUNTDOWN.readyTime;
+      // The game starts when "Start!" goes away.
+      if (step === COUNTDOWN.go) this.time.delayedCall(delay + time - 250, then);
+      this.time.delayedCall(delay, () => {
+        if (this.state === 'leaving') return;
+        const text = this.add
+          .text(GAME_WIDTH / 2, COUNTDOWN.y, step, {
+            fontFamily: 'Oswald',
+            fontStyle: '700',
+            fontSize: isNumber ? '300px' : '150px',
+            color: '#FFFFFF',
+            resolution: RENDER_SCALE,
+          })
+          .setOrigin(0.5)
+          .setDepth(DEPTH.intro)
+          .setAngle(TITLE_LETTERS[i % TITLE_LETTERS.length].angle);
+        // Pops up, stays a moment, then grows a little and fades away.
+        this.tweens.add({ targets: text, scale: { from: 0.3, to: 1 }, duration: 350, ease: 'Back.Out' });
+        this.tweens.add({ targets: text, alpha: 0, scale: 1.3, delay: time - 250, duration: 250, onComplete: () => text.destroy() });
       });
+      delay += time;
     });
   }
 
@@ -716,6 +930,7 @@ export class AdventureScene extends Scene {
 
     if (MENU_STATES.includes(this.state)) {
       this.updateIdle(dt);
+      if (this.state === 'tutorial') this.updateTutorial(dt);
       return;
     }
     if (this.state === 'sailing') this.voyageTime += dt;
@@ -973,6 +1188,8 @@ export class AdventureScene extends Scene {
 
   /** Is the bucket above the railing, so the water goes into the sea? */
   private isOverboard(): boolean {
+    // In the tutorial there is no boat yet: lifting the bucket is enough.
+    if (this.state === 'tutorial') return this.bucket.y < PRACTICE.puddle.throwAbove;
     return this.bucket.y < railY(this.bucket.x) + this.boatOffset() - 20;
   }
 
@@ -982,15 +1199,15 @@ export class AdventureScene extends Scene {
     this.bucket.setPosition(x, y);
 
     let angle = 0;
-    if (this.state === 'sailing' && !this.bucketFull) {
-      const puddle = this.puddles.find(
-        (p) =>
-          p.buckets > 0 &&
-          ((x - PUDDLE_SPOTS[p.spot].x) / PUDDLE_REACH.x) ** 2 +
-            ((y - PUDDLE_SPOTS[p.spot].y - this.boatOffset()) / PUDDLE_REACH.y) ** 2 <
-            1,
-      );
-      if (puddle) {
+    const inTutorial = this.state === 'tutorial' && this.practice && !this.practice.p1Done;
+    const playing = this.state === 'sailing' || inTutorial;
+    if (playing && !this.bucketFull) {
+      // The puddle under the bucket: the practice puddle, or one on the deck.
+      const isOn = (spotX: number, spotY: number) => ((x - spotX) / PUDDLE_REACH.x) ** 2 + ((y - spotY) / PUDDLE_REACH.y) ** 2 < 1;
+      const puddle = inTutorial
+        ? undefined
+        : this.puddles.find((p) => p.buckets > 0 && isOn(PUDDLE_SPOTS[p.spot].x, PUDDLE_SPOTS[p.spot].y + this.boatOffset()));
+      if (puddle || (inTutorial && isOn(PRACTICE.puddle.x, PRACTICE.puddle.y))) {
         this.filling += dt * 1000;
         // Scooping.
         angle = Math.sin(this.time0 * 18) * 14;
@@ -998,7 +1215,7 @@ export class AdventureScene extends Scene {
       } else {
         this.filling = 0;
       }
-    } else if (this.state === 'sailing' && this.isOverboard()) {
+    } else if (playing && this.isOverboard()) {
       // Full and over the sea: the bucket starts to tip, "now press!".
       angle = (x < GAME_WIDTH / 2 ? -1 : 1) * (22 + Math.sin(this.time0 * 10) * 9);
     }
@@ -1006,12 +1223,21 @@ export class AdventureScene extends Scene {
     this.bucketImage.angle = angle;
   }
 
-  private fillBucket(puddle: Puddle) {
+  /** Fill the bucket from a puddle on the deck (no puddle = the practice puddle). */
+  private fillBucket(puddle?: Puddle) {
     this.filling = 0;
     this.bucketFull = true;
     if (this.textures.exists('av-bucket-full')) this.bucketImage.setTexture('av-bucket-full');
     popIn(this, this.bucketImage, { duration: 300 });
 
+    if (!puddle) {
+      const practice = this.practice;
+      if (!practice) return;
+      practice.p1Hint.setText(PRACTICE.hints.throw);
+      this.tweens.killTweensOf(practice.puddle);
+      this.tweens.add({ targets: practice.puddle, scale: 0, duration: 300 });
+      return;
+    }
     puddle.buckets--;
     this.tweens.killTweensOf(puddle.image);
     if (puddle.buckets > 0) {
@@ -1028,7 +1254,7 @@ export class AdventureScene extends Scene {
     this.bucketImage.setTexture('av-bucket').setScale(DESIGN / RENDER_SCALE);
   }
 
-  /** Player 1's button (or a shake) while sailing: throw the water overboard. */
+  /** Player 1's button (or a shake) while sailing or practising: throw the water overboard. */
   private throwWater() {
     if (!this.bucketFull) return;
     if (!this.isOverboard()) {
@@ -1036,6 +1262,7 @@ export class AdventureScene extends Scene {
       return;
     }
     this.emptyBucket();
+    if (this.state === 'tutorial') this.finishPracticeBucket();
 
     // The water flies out, away from the boat.
     const side = this.bucket.x < GAME_WIDTH / 2 ? -1 : 1;
@@ -1043,7 +1270,8 @@ export class AdventureScene extends Scene {
       .image(this.bucket.x + side * 40, this.bucket.y - 40, 'av-splash2')
       .setOrigin(0.35, 0.85)
       .setFlipX(side < 0)
-      .setDepth(DEPTH.splash);
+      // In the tutorial it flies in front of the cards.
+      .setDepth(this.state === 'tutorial' ? DEPTH.practice : DEPTH.splash);
     const scale = (0.75 * DESIGN) / RENDER_SCALE;
     water.setScale(scale * 0.3);
     this.tweens.add({ targets: water, scale, duration: 250, ease: 'Back.Out' });
@@ -1057,10 +1285,11 @@ export class AdventureScene extends Scene {
   // ---------------------------------------------------------------------------
 
   private handPosition() {
-    return this.handMoved ? inputManager.getPlayerCursor(2) : HAND_START;
+    return this.handMoved ? inputManager.getPlayerCursor(2) : this.handRest;
   }
 
   private wheelCenter() {
+    if (this.state === 'tutorial') return PRACTICE.wheel;
     return { x: PIVOT.x + WHEEL.x, y: PIVOT.y + WHEEL.y + this.boatOffset() };
   }
 
@@ -1070,7 +1299,7 @@ export class AdventureScene extends Scene {
   }
 
   private onPointerDown(pointer: Input.Pointer) {
-    if (pointer.id === 99 || this.state !== 'sailing') return;
+    if (pointer.id === 99 || (this.state !== 'sailing' && this.state !== 'tutorial')) return;
     this.handMoved = true;
     // Already holding it after a single click: this click lets go.
     if (this.grab?.sticky) {
@@ -1079,7 +1308,8 @@ export class AdventureScene extends Scene {
     }
     const { x, y } = this.cameras.main.getWorldPoint(pointer.x, pointer.y);
     const center = this.wheelCenter();
-    if (PMath.Distance.Between(x, y, center.x, center.y) > CONFIG.WHEEL.grabRadius) return;
+    const radius = this.state === 'tutorial' ? PRACTICE.wheel.grabRadius : CONFIG.WHEEL.grabRadius;
+    if (PMath.Distance.Between(x, y, center.x, center.y) > radius) return;
     this.grab = {
       angle: Math.atan2(y - center.y, x - center.x),
       sticky: false,
@@ -1103,7 +1333,7 @@ export class AdventureScene extends Scene {
   private updateWheel(dt: number) {
     const W = CONFIG.WHEEL;
     const grab = this.grab;
-    if (grab && this.state === 'sailing') {
+    if (grab && (this.state === 'sailing' || this.state === 'tutorial')) {
       const hand = this.handPosition();
       const center = this.wheelCenter();
       const angle = Math.atan2(hand.y - center.y, hand.x - center.x);
@@ -1136,14 +1366,18 @@ export class AdventureScene extends Scene {
   /** A click or button press of either player. */
   private onSelect(event: { player?: number }) {
     // On the title and intro, mouse clicks arrive as 'pointerup' (see pressButton).
-    if (MENU_STATES.includes(this.state)) {
+    if (this.state === 'tutorial') {
+      if (event.player === 1) this.throwWater();
+    } else if (MENU_STATES.includes(this.state)) {
       if (event.player === 1) this.pressButton();
     } else if (this.state === 'chest') this.openChest();
     else if (this.state === 'sailing' && event.player === 1) this.throwWater();
   }
 
   private onShake(event: { player: number }) {
-    if (MENU_STATES.includes(this.state)) this.pressButton();
+    if (this.state === 'tutorial') {
+      if (event.player === 1) this.throwWater();
+    } else if (MENU_STATES.includes(this.state)) this.pressButton();
     else if (this.state === 'chest') this.openChest();
     else if (this.state === 'sailing' && event.player === 1) this.throwWater();
   }
