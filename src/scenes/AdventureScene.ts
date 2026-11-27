@@ -125,6 +125,8 @@ const PUDDLE_SPOTS = [
   { x: 480, y: 1170 }, { x: 650, y: 1095 }, { x: 270, y: 1215 },
   { x: 1450, y: 1170 }, { x: 1280, y: 1095 }, { x: 1660, y: 1215 },
 ];
+/** The puddles that can lie on the deck: water01.svg, water02.svg and water03.svg. */
+const PUDDLE_KEYS = ['av-puddle1', 'av-puddle2', 'av-puddle3'];
 /** How close the bucket has to be to a puddle (an oval: wider than high). */
 const PUDDLE_REACH = { x: 200, y: 170 };
 
@@ -381,6 +383,7 @@ export class AdventureScene extends Scene {
     svg('av-bucket', 'controllers/emmer.svg');
     svg('av-splash1', 'controllers/water-splash01.svg');
     svg('av-splash2', 'controllers/water-splash02.svg');
+    PUDDLE_KEYS.forEach((key, i) => svg(key, `controllers/water0${i + 1}.svg`));
     svg('av-sign', 'tutorial/bord-uitleg.svg');
     CARDS.forEach((card) => svg(card.key, card.file));
     preloadStartButton(this);
@@ -493,7 +496,6 @@ export class AdventureScene extends Scene {
 
   private buildTools() {
     this.makeFullBucket();
-    this.makePuddleTexture();
 
     const label = (key: string, offset: { x: number; y: number }) => {
       const image = this.add.image(offset.x, offset.y, key);
@@ -898,7 +900,7 @@ export class AdventureScene extends Scene {
     const buckets = Math.min(PMath.Between(1, 2), CONFIG.WATER.maxBuckets - this.waterAmount());
 
     // The puddle is taken right away (so no second splash picks this spot), and shows when the water lands.
-    const image = this.add.image(spot.x - PIVOT.x, spot.y - PIVOT.y, 'av-puddle').setFlipX(Math.random() < 0.5).setVisible(false);
+    const image = this.add.image(spot.x - PIVOT.x, spot.y - PIVOT.y, PMath.RND.pick(PUDDLE_KEYS)).setVisible(false);
     this.boat.addAt(image, 1);
     const puddle: Puddle = { spot: spotIndex, image, buckets: 0 };
     this.puddles.push(puddle);
@@ -932,29 +934,7 @@ export class AdventureScene extends Scene {
   }
 
   private puddleScale(buckets: number): number {
-    return (buckets > 1 ? 1 : 0.7) / RENDER_SCALE;
-  }
-
-  /** A puddle on the deck, with a few drops next to it. Drawn once. */
-  private makePuddleTexture() {
-    if (this.textures.exists('av-puddle')) return;
-    const width = 340;
-    const height = 150;
-    const texture = this.textures.createCanvas('av-puddle', width * RENDER_SCALE, height * RENDER_SCALE);
-    if (!texture) return;
-    const ctx = texture.getContext();
-    ctx.scale(RENDER_SCALE, RENDER_SCALE);
-    ctx.fillStyle = SEA.dark;
-    ctx.fill(
-      new Path2D(
-        'M45 40 C55 20 100 38 135 26 C170 5 285 15 300 55 C312 90 240 100 205 112 C170 128 150 132 100 120 C60 110 12 100 14 78 C16 62 40 60 45 40 Z',
-      ),
-    );
-    ctx.fill(new Path2D('M225 128 C232 108 290 110 296 126 C300 142 235 148 225 128 Z'));
-    ctx.beginPath();
-    ctx.ellipse(70, 22, 24, 9, -0.1, 0, Math.PI * 2);
-    ctx.fill();
-    texture.refresh();
+    return ((buckets > 1 ? 1 : 0.7) * DESIGN) / RENDER_SCALE;
   }
 
   /** The bucket with water in it: emmer.svg with the dark inside coloured like water. */
