@@ -109,14 +109,14 @@ const d = (value: number) => value * DESIGN;
 /** The boat tilts around this point (bottom middle of the screen). */
 const PIVOT = { x: GAME_WIDTH / 2, y: GAME_HEIGHT };
 /** Top middle of boot.svg (the top of the mast), relative to the pivot. */
-const BOAT = { x: d(1083) - PIVOT.x, y: d(545) - PIVOT.y, originX: 1475 / 2958 };
+const BOAT = { x: d(1083) - PIVOT.x, y: d(545) - PIVOT.y, originX: 1547.3 / 3103 };
 /** The middle of the wheel, relative to the pivot, and where that is inside stuur.svg. */
 const WHEEL = { x: d(1078) - PIVOT.x, y: d(1118) - PIVOT.y, originX: 293.57 / 594, originY: 288.7 / 590 };
 
 /** The clouds hang on their strings: x = the string, y = top of the image. */
 const CLOUDS = [
-  { key: 'av-cloud1', x: d(529), y: d(-1034), originX: 264 / 535 },
-  { key: 'av-cloud2', x: d(1724), y: d(-1070), originX: 240 / 447 },
+  { key: 'av-cloud1', x: d(529), y: d(-1034), originX: 254.45 / 514 },
+  { key: 'av-cloud2', x: d(1724), y: d(-1070), originX: 226.5 / 424 },
 ];
 
 /** Top of the railing (game coordinates, boat not sunk). Water thrown from above it goes overboard. */
@@ -229,10 +229,10 @@ interface ObstacleDef {
 
 const OBSTACLES: ObstacleDef[] = [
   { key: 'av-rock1', file: 'obstakels/steen01.svg', originX: 294 / 599, originY: 790 / 801, halfWidth: 170, sunk: 90, bob: 0 },
-  { key: 'av-rock2', file: 'obstakels/steen02.svg', originX: 262 / 535, originY: 1011 / 1022, halfWidth: 140, sunk: 90, bob: 0 },
-  { key: 'av-rock3', file: 'obstakels/steen03.svg', originX: 207 / 424, originY: 1045 / 1056, halfWidth: 120, sunk: 90, bob: 0 },
+  { key: 'av-rock2', file: 'obstakels/steen02.svg', originX: 191.6 / 393, originY: 961 / 974, halfWidth: 110, sunk: 90, bob: 0 },
+  { key: 'av-rock3', file: 'obstakels/steen03.svg', originX: 262 / 535, originY: 1011 / 1022, halfWidth: 140, sunk: 90, bob: 0 },
   { key: 'av-whale', file: 'obstakels/walvis.svg', originX: 335 / 679, originY: 549 / 676, halfWidth: 190, sunk: 20, bob: 22, keepBottomHidden: true },
-  { key: 'av-croc', file: 'obstakels/tik-tok-krokodil.svg', originX: 252 / 512, originY: 616 / 641, halfWidth: 160, sunk: 60, bob: 22, keepBottomHidden: true },
+  { key: 'av-croc', file: 'obstakels/tik-tok-krokodil.svg', originX: 252 / 512, originY: 616 / 641, halfWidth: 160, sunk: 50, bob: 22, keepBottomHidden: true },
 ];
 
 /**
@@ -245,7 +245,7 @@ const GONE_P = 0.84;
 /** How much lower than in the design the island (with chest and book) is. */
 const ISLAND_DOWN = 30;
 /** The island (with the chest on it): where its bottom middle ends up, and its size there. */
-const ISLAND = { x: d(1080), bottom: d(1313) + ISLAND_DOWN, scale: 0.945 * DESIGN, startScale: 0.1 };
+const ISLAND = { x: d(1080), bottom: d(1313) + ISLAND_DOWN, scale: DESIGN, startScale: 0.1 };
 /** The chest and the book, as positions in the design (bottom middle of the chest, middle of the book). */
 const CHEST = { x: d(1080), bottom: d(1017) + ISLAND_DOWN };
 const CHEST_BOOK = { x: d(1083), y: d(575) + ISLAND_DOWN };
@@ -279,7 +279,7 @@ const DEPTH = {
 };
 
 /** The images that are bigger than the GPU allows at RENDER_SCALE are loaded a bit smaller. */
-const LOAD_SCALE: Record<string, number> = { 'av-boat': 1.38, 'av-island': 1.59 };
+const LOAD_SCALE: Record<string, number> = { 'av-boat': 1.31, 'av-island': 1.59 };
 const loadScale = (key: string) => LOAD_SCALE[key] ?? RENDER_SCALE;
 
 /**
@@ -1422,7 +1422,7 @@ export class AdventureScene extends Scene {
     });
 
     // The island with the chest on it comes closer, as one piece.
-    const island = this.add.image(0, 0, 'av-island').setOrigin(0.5, 1343 / 1354).setScale(ISLAND.scale / loadScale('av-island'));
+    const island = this.add.image(0, 0, 'av-island').setOrigin(0.5, 1268 / 1280).setScale(ISLAND.scale / loadScale('av-island'));
     this.chest = this.add
       .image(CHEST.x - ISLAND.x, CHEST.bottom - ISLAND.bottom, 'av-chest-closed')
       // The bottom middle of the chest (the same spot in the open and the closed image).
