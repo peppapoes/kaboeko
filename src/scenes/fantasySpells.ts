@@ -95,6 +95,9 @@ export const SPELLS: SpellDef[] = [
   },
 ];
 
+/** The short practice movement in the intro (a small wave, left to right). */
+export const PRACTICE_SHAPE: Point[] = wave(1, 0.35, 16);
+
 /** Scale a shape to the screen: center (cx, cy), size = width/height of the -1..1 box. */
 export function placeShape(shape: Point[], cx: number, cy: number, size: number): Point[] {
   return shape.map((p) => ({ x: cx + (p.x * size) / 2, y: cy + (p.y * size) / 2 }));

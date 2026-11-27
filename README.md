@@ -68,9 +68,12 @@ De Arduino-sketch staat in `hardware/kaboeko_mpu6050/`.
   speler 2 = muis (gewoon klikken).
 - **Fantasiescherm:** de titel *Fantasie* en de twee bewegende props verdwijnen
   vanzelf. Daarna verschijnen de spelersuitleg en het houten bord met het
-  speldoel. De handjes blijven zichtbaar tot de intro wordt aangeklikt. Daarna
-  heeft speler 1 (controller) de paraplu en speler 2 (muis) de toverstaf. De
-  controllerknop (of spatie) klapt de paraplu open of dicht.
+  speldoel. Dan worden de paraplu en de toverstaf meteen de cursors: speler 1
+  (controller) heeft de paraplu, speler 2 (muis) de toverstaf. De controllerknop
+  (of spatie) klapt de paraplu open of dicht. Eerst is er een mini-tutorial:
+  speler 1 opent de paraplu op een blauwe cirkel, speler 2 trekt een korte
+  stippellijn na. Als ze het allebei gedaan hebben, verdwijnen de bordjes, komt
+  "Hou je klaar!", 3, 2, 1 en "Start!", en start het spel vanzelf.
   De heks gooit vliegende apen en gifflesjes; een blauwe cirkel toont waar ze
   landen. Houdt speler 1 daar de open paraplu als de aanval aankomt, dan kaatst die
   terug naar de heks en klapt de paraplu vanzelf dicht. Mist de paraplu, dan krijgt de heks wat leven terug. Speler 2 trekt met de toverstaf de

@@ -1,10 +1,9 @@
 import { GameObjects, Input, Math as PMath, Scene, type Time, type Tweens, type Types } from 'phaser';
 import { GAME_HEIGHT, GAME_WIDTH, RENDER_SCALE, setupCamera } from '../config';
 import { inputManager } from '../input/InputManager';
-import { dropIn, popIn, riseIn, setRestAngle, sinkOut, slideIn, slideOut } from '../puppet';
+import { dropIn, popIn, riseIn, setRestAngle, sinkOut, slideIn } from '../puppet';
 import { PlayerPointers } from '../playerPointers';
-import { addStartButton, preloadStartButton } from '../ui';
-import { placeShape, resample, SPELLS, SpellTrace, type SpellDef } from './fantasySpells';
+import { placeShape, PRACTICE_SHAPE, resample, SPELLS, SpellTrace, type Point, type SpellDef } from './fantasySpells';
 
 /*
  * Minigame "fantasie". Works the same way as the geschiedenis game.
@@ -16,11 +15,14 @@ import { placeShape, resample, SPELLS, SpellTrace, type SpellDef } from './fanta
  *  1. Intro: the letters go, the umbrella and wand move to their spot next to
  *     the cards. Two small cards (what each player does) and the big wooden
  *     sign (the goal of the game) come up. The players' hands are the cursor.
- *  2. A button press starts the game:
- *     - player 1 (controller, left, blue) is the protector with the umbrella;
- *       the controller button (or Space) opens/closes the umbrella.
- *     - player 2 (mouse, right, red) is the wizard with the wand.
- *     Spells and witch attacks come later.
+ *  2. Mini tutorial: the umbrella and wand become the players' cursors.
+ *     - player 1 (controller, left, blue) opens the umbrella (controller button
+ *       or Space) on a blue circle below their card;
+ *     - player 2 (mouse, right, red) follows a short dotted line below theirs.
+ *     When both did it, the cards go, "Hou je klaar!" and 3, 2, 1, and the game starts.
+ *  3. The game: the witch throws attacks (player 1 bounces them back with the
+ *     umbrella), player 2 casts spells at her. At zero health she goes up in
+ *     smoke and the book appears.
  */
 
 const PATH = 'assets/minigame-fantasie/';
@@ -57,8 +59,23 @@ const PROP_SPOTS = {
 
 /** How far (degrees) the cards lean towards the outside of the screen. */
 const CARD_LEAN = 5;
-/** "Druk op een knop om te starten" (the brown button, like geschiedenis), at the bottom between the cards. */
-const START_BUTTON = { x: GAME_WIDTH / 2, y: 1140, width: 755 };
+/**
+ * After the tutorial: "Hou je klaar!", then 3, 2, 1 in the middle of the screen,
+ * then "Start!" and the game starts by itself. Times in ms.
+ */
+const COUNTDOWN = { text: 'Hou je klaar!', numbers: ['3', '2', '1'], go: 'Start!', y: 600, readyTime: 1300, numberTime: 850 };
+/**
+ * The mini tutorial, below the cards: player 1 opens the umbrella on the blue
+ * circle, player 2 follows the short dotted line (size = its width).
+ * `waitText` is shown where the start button comes, until both are done.
+ */
+const PRACTICE = {
+  circle: { x: 640, y: 1050 },
+  line: { x: 1240, y: 1040, size: 320 },
+  waitText: { text: 'Probeer het eerst allebei even!', y: 1200 },
+  /** After both are done, this long (ms) before the cards go and the countdown starts. */
+  doneDelay: 700,
+};
 /** The intro cards stand a bit higher than the end of their stick, like in geschiedenis. */
 const INTRO_CARD_BOTTOM_Y = GAME_HEIGHT + 30;
 
@@ -303,15 +320,18 @@ const DEPTH = {
   projectile: 5,
   spell: 6,
   hud: 8,
-  players: 10,
   smoke: 11,
   backButton: 14,
   card: 15,
+  /** The tutorial's circle and line (below the cards, above the floor). */
+  practice: 15.5,
+  /** The umbrella and wand: above the cards, because they are already used in the intro. */
+  players: 16,
   introProp: 16,
   book: 18,
 };
 
-type State = 'title' | 'titleReady' | 'intro' | 'introReady' | 'busy' | 'playing' | 'done';
+type State = 'title' | 'titleReady' | 'intro' | 'tutorial' | 'busy' | 'playing' | 'done';
 type AttackKind = 'monkey' | 'potion';
 /** Small drawings on the player cards: the red landing circle, or a spell movement to copy. */
 type CardIcon = 'target' | 'spell';
@@ -322,6 +342,19 @@ interface Attack {
   sprite: GameObjects.Image;
   marker: GameObjects.Graphics;
   tween?: Tweens.Tween;
+}
+
+/** The mini tutorial in the intro: what each player has to try once. */
+interface Practice {
+  circle: GameObjects.Graphics;
+  trace: SpellTrace;
+  local: Point[];
+  traced: GameObjects.Graphics;
+  start: GameObjects.Arc;
+  line: GameObjects.Container;
+  waitText: GameObjects.Text;
+  p1Done: boolean;
+  p2Done: boolean;
 }
 
 /** The spell the wizard is tracing now. */
@@ -345,7 +378,9 @@ export class FantasyScene extends Scene {
   private introUmbrella?: GameObjects.Image;
   /** Cards and sign of the intro. */
   private introObjects: GameObjects.Container[] = [];
-  private introPress?: GameObjects.Image;
+  private practice?: Practice;
+  /** The umbrella and wand are the cursors (from the tutorial on). */
+  private playersReady = false;
   /** The players' hands, on the title and intro (while playing, the wand and umbrella are the cursor). */
   private pointers!: PlayerPointers;
   private backButton?: GameObjects.Image;
@@ -413,7 +448,6 @@ export class FantasyScene extends Scene {
     // Shared with the geschiedenis game.
     this.load.image('fantasy-back', 'assets/minigame-geschiedenis/back-button.png');
     PlayerPointers.preload(this);
-    preloadStartButton(this);
   }
 
   create() {
@@ -433,7 +467,8 @@ export class FantasyScene extends Scene {
     this.introWand = undefined;
     this.introUmbrella = undefined;
     this.introObjects = [];
-    this.introPress = undefined;
+    this.practice = undefined;
+    this.playersReady = false;
     this.isUmbrellaOpen = false;
     this.witchHealth = WITCH.health;
     this.poseId = 0;
@@ -483,13 +518,12 @@ export class FantasyScene extends Scene {
   /** "The button": a mouse click, or player 1's controller button / Space. */
   private pressButton() {
     if (this.state === 'titleReady') this.leaveTitle();
-    else if (this.state === 'introReady') this.startGame();
   }
 
   /** Player 1's button (controller button or Space): opens/closes the umbrella while playing. */
   private onPlayer1Button({ player }: { player?: number }) {
     if (player !== 1) return;
-    if (this.state === 'playing') this.toggleUmbrella();
+    if (this.state === 'playing' || this.state === 'tutorial') this.toggleUmbrella();
     else this.pressButton();
   }
 
@@ -654,15 +688,149 @@ export class FantasyScene extends Scene {
     riseIn(this, cardP1, { delay: 550 });
     this.introObjects = [sign, cardP2, cardP1];
 
-    // The brown "Druk op een knop om te starten" button, like geschiedenis.
-    this.introPress = addStartButton(this, START_BUTTON.x, START_BUTTON.y, {
-      width: START_BUTTON.width,
-      depth: DEPTH.card,
-      delay: 900,
-    });
-
+    // When the cards are up: the mini tutorial (the start button comes after it).
     this.time.delayedCall(1400, () => {
-      if (this.state === 'intro') this.state = 'introReady';
+      if (this.state === 'intro') this.startTutorial();
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Mini tutorial
+  // ---------------------------------------------------------------------------
+
+  /**
+   * The umbrella and wand next to the cards become the players' cursors, and
+   * each player tries their job once: player 1 opens the umbrella on the blue
+   * circle, player 2 follows a short dotted line.
+   */
+  private startTutorial() {
+    this.state = 'tutorial';
+
+    // The props from the title take over from the hands, right where they are.
+    const umbrella = this.introUmbrella;
+    const wand = this.introWand;
+    this.introUmbrella = undefined;
+    this.introWand = undefined;
+    this.createPlayers(
+      { x: umbrella?.x ?? PROP_SPOTS.intro.umbrella.x, y: umbrella?.y ?? PROP_SPOTS.intro.umbrella.y },
+      { x: wand?.x ?? PROP_SPOTS.intro.wand.x, y: wand?.y ?? PROP_SPOTS.intro.wand.y },
+    );
+    for (const prop of [umbrella, wand]) {
+      if (!prop) continue;
+      this.tweens.killTweensOf(prop);
+      prop.destroy();
+    }
+
+    // Player 1: the blue circle, like where the witch's attacks land.
+    const circle = this.drawLandingCircle(PRACTICE.circle.x, PRACTICE.circle.y).setDepth(DEPTH.practice).setAlpha(0);
+    this.tweens.add({ targets: circle, alpha: 1, duration: 300, delay: 200 });
+
+    // Player 2: a short movement to follow, drawn like the spells.
+    const { x, y, size } = PRACTICE.line;
+    const local = resample(placeShape(PRACTICE_SHAPE, 0, 0, size), SPELL.dotSpacing);
+    const { dots, traced, start } = this.drawSpellDots(local);
+    const line = this.add.container(x, y, [dots, traced, start]).setDepth(DEPTH.practice);
+    popIn(this, line, { delay: 350 });
+    const trace = new SpellTrace(
+      local.map((d) => ({ x: d.x + x, y: d.y + y })),
+      SPELL.hitRadius,
+    );
+
+    // Where the start button will come: "try it first".
+    const waitText = this.add
+      .text(GAME_WIDTH / 2, PRACTICE.waitText.y, PRACTICE.waitText.text, {
+        fontFamily: SIGN_FONT,
+        fontStyle: '700',
+        fontSize: '36px',
+        color: '#FFFFFF',
+        resolution: RENDER_SCALE,
+      })
+      .setOrigin(0.5)
+      .setDepth(DEPTH.practice)
+      .setAlpha(0);
+    this.tweens.add({ targets: waitText, alpha: 1, duration: 400, delay: 500 });
+
+    this.practice = { circle, trace, local, traced, start, line, waitText, p1Done: false, p2Done: false };
+  }
+
+  /** Player 1 in the tutorial: is the open umbrella on the circle? */
+  private checkPracticeUmbrella() {
+    const practice = this.practice;
+    if (this.state !== 'tutorial' || !practice || practice.p1Done || !this.isUmbrellaOpen) return;
+    const { x, y } = PRACTICE.circle;
+    if (PMath.Distance.Between(x, y, this.umbrellaAt.x, this.umbrellaAt.y) >= ATTACK.blockRadius) return;
+
+    practice.p1Done = true;
+    this.tweens.killTweensOf(practice.circle);
+    practice.circle.setScale(1);
+    this.burst(x, y);
+    this.addCheck(x, y, PLAYER_COLOR.p1);
+    // Like in the game: the umbrella closes by itself.
+    this.tweens.add({ targets: this.umbrellaOpen, angle: { from: -12, to: 0 }, duration: 500, ease: 'Elastic.Out' });
+    this.time.delayedCall(ATTACK.closeAfterBounce, () => {
+      if (this.isUmbrellaOpen) this.toggleUmbrella();
+    });
+    this.checkPracticeDone();
+  }
+
+  /** Player 2 in the tutorial: the wand moved, does it follow the line? */
+  private tracePractice(from: Point, to: Point) {
+    const practice = this.practice;
+    if (this.state !== 'tutorial' || !practice || practice.p2Done || !practice.trace.feed(from, to)) return;
+    this.drawTraced(practice.traced, practice.start, practice.local, practice.trace.reached);
+    if (!practice.trace.done) return;
+
+    practice.p2Done = true;
+    const end = practice.local[practice.local.length - 1];
+    const x = PRACTICE.line.x + end.x;
+    const y = PRACTICE.line.y + end.y;
+    this.burst(x, y);
+    this.addCheck(x, y, PLAYER_COLOR.p2);
+    this.checkPracticeDone();
+  }
+
+  /** Both tried it: after a moment the intro goes and the countdown starts. */
+  private checkPracticeDone() {
+    const practice = this.practice;
+    if (!practice || !practice.p1Done || !practice.p2Done) return;
+
+    this.time.delayedCall(PRACTICE.doneDelay, () => {
+      if (this.state === 'tutorial') this.startGame();
+    });
+  }
+
+  private removePractice() {
+    const practice = this.practice;
+    this.practice = undefined;
+    if (!practice) return;
+    for (const object of [practice.circle, practice.line, practice.waitText]) {
+      this.tweens.killTweensOf(object);
+      this.tweens.add({ targets: object, alpha: 0, duration: 300, onComplete: () => object.destroy() });
+    }
+  }
+
+  /** A check mark in a white circle: this player did their part. It goes with the tutorial. */
+  private addCheck(x: number, y: number, color: number) {
+    const mark = this.add
+      .graphics()
+      .fillStyle(0xffffff, 1)
+      .fillCircle(0, 0, 40)
+      .lineStyle(6, color, 1)
+      .strokeCircle(0, 0, 40)
+      .lineStyle(10, color, 1)
+      .beginPath()
+      .moveTo(-18, 2)
+      .lineTo(-5, 16)
+      .lineTo(20, -14)
+      .strokePath();
+    const check = this.add.container(x, y - 70, [mark]).setDepth(DEPTH.practice);
+    popIn(this, check);
+    // Removed together with the rest of the tutorial.
+    const practice = this.practice;
+    if (practice) practice.line.once('destroy', () => check.destroy());
+    this.time.delayedCall(PRACTICE.doneDelay + 1200, () => {
+      if (!check.active) return;
+      this.tweens.add({ targets: check, alpha: 0, duration: 300, onComplete: () => check.destroy() });
     });
   }
 
@@ -764,15 +932,9 @@ export class FantasyScene extends Scene {
     return this.add.container(GAME_WIDTH / 2, SIGN.topY, [image, titleText, bodyText]).setDepth(DEPTH.card);
   }
 
+  /** The intro goes (cards, sign, tutorial), the full room appears, then the countdown and the game. */
   private startGame() {
     this.state = 'busy';
-
-    const press = this.introPress;
-    this.introPress = undefined;
-    if (press) {
-      this.tweens.killTweensOf(press);
-      this.tweens.add({ targets: press, alpha: 0, duration: 250, onComplete: () => press.destroy() });
-    }
 
     const [sign, cardP2, cardP1] = this.introObjects;
     sinkOut(this, cardP1);
@@ -790,29 +952,51 @@ export class FantasyScene extends Scene {
     this.tweens.add({ targets: room, alpha: 1, duration: 700, delay: 300 });
     const objects = this.introObjects;
     this.introObjects = [];
+    this.removePractice();
+    // The umbrella starts the game closed.
+    if (this.isUmbrellaOpen) this.toggleUmbrella();
 
-    const wand = this.introWand;
-    const umbrella = this.introUmbrella;
-    this.introWand = undefined;
-    this.introUmbrella = undefined;
-    if (umbrella) slideOut(this, umbrella, 'left');
-    if (wand) slideOut(this, wand, 'right');
+    this.time.delayedCall(800, () => objects.forEach((o) => o.destroy()));
 
-    this.time.delayedCall(800, () => {
-      objects.forEach((o) => o.destroy());
-      wand?.destroy();
-      umbrella?.destroy();
-    });
-
-    this.time.delayedCall(500, () => {
+    this.time.delayedCall(700, () => this.countdown(() => {
       this.buildPlayfield();
-      // The hands turn into the wand and the umbrella: the game has started.
-      this.pointers.hide();
-      this.input.setDefaultCursor('none');
       this.state = 'playing';
-      // Player 1 (controller) moves the umbrella, player 2 (mouse) the wand.
-      inputManager.on('cursormove', this.moveUmbrella, this);
-      this.input.on('pointermove', this.moveWand, this);
+    }));
+  }
+
+  /** "Hou je klaar!", then 3, 2, 1 (big, in the middle), then "Start!", and when that goes: `then`. */
+  private countdown(then: () => void) {
+    const steps = [COUNTDOWN.text, ...COUNTDOWN.numbers, COUNTDOWN.go];
+    let delay = 0;
+    steps.forEach((step, i) => {
+      const isNumber = i > 0 && i <= COUNTDOWN.numbers.length;
+      const time = isNumber ? COUNTDOWN.numberTime : COUNTDOWN.readyTime;
+      // The game starts when "Start!" goes away.
+      if (step === COUNTDOWN.go) this.time.delayedCall(delay + time - 250, then);
+      this.time.delayedCall(delay, () => {
+        const text = this.add
+          .text(GAME_WIDTH / 2, COUNTDOWN.y, step, {
+            fontFamily: 'Oswald',
+            fontStyle: '700',
+            fontSize: isNumber ? '300px' : '150px',
+            color: '#FFFFFF',
+            resolution: RENDER_SCALE,
+          })
+          .setOrigin(0.5)
+          .setDepth(DEPTH.card)
+          .setAngle(TITLE_LETTER_ANGLES[i % TITLE_LETTER_ANGLES.length]);
+        // Pops up, stays a moment, then grows a little and fades away.
+        this.tweens.add({ targets: text, scale: { from: 0.3, to: 1 }, duration: 350, ease: 'Back.Out' });
+        this.tweens.add({
+          targets: text,
+          alpha: 0,
+          scale: 1.3,
+          delay: time - 250,
+          duration: 250,
+          onComplete: () => text.destroy(),
+        });
+      });
+      delay += time;
     });
   }
 
@@ -831,31 +1015,45 @@ export class FantasyScene extends Scene {
     this.witchHealth = WITCH.health;
     this.buildHealthBar();
 
+    this.time.delayedCall(SPELL.firstDelay, () => this.showNextSpell());
+    this.time.delayedCall(ATTACK.firstDelay, () => this.witchAttack());
+  }
+
+  /**
+   * The umbrella (player 1) and the wand (player 2) take over from the hands:
+   * from now on they are the players' cursors.
+   */
+  private createPlayers(umbrellaAt: Point, wandAt: Point) {
     // Player 1: the umbrella (follows the controller). Origin = middle of the canopy.
     const u = PLAYER_PROPS.umbrella;
-    this.umbrellaOpen = this.add.image(u.startX, u.startY, 'fantasy-umbrella-open').setOrigin(0.5, 0.33).setDepth(DEPTH.players);
+    this.umbrellaOpen = this.add.image(umbrellaAt.x, umbrellaAt.y, 'fantasy-umbrella-open').setOrigin(0.5, 0.33).setDepth(DEPTH.players);
     this.umbrellaOpen.setScale(u.openWidth / this.umbrellaOpen.width);
-    this.umbrellaClosed = this.add.image(u.startX, u.startY, 'fantasy-umbrella-closed').setDepth(DEPTH.players);
+    this.umbrellaClosed = this.add.image(umbrellaAt.x, umbrellaAt.y, 'fantasy-umbrella-closed').setDepth(DEPTH.players);
     this.umbrellaClosed.setScale(u.closedHeight / this.umbrellaClosed.height);
-    this.umbrellaBadge = this.addPlayerBadge('SPELER 1', 0x2b69b4);
+    this.umbrellaBadge = this.addPlayerBadge('SPELER 1', PLAYER_COLOR.p1);
     this.isUmbrellaOpen = false;
     this.umbrellaOpen.setVisible(false);
-    this.moveUmbrella({ x: u.startX, y: u.startY });
+    this.moveUmbrella(umbrellaAt);
 
     // Player 2: the wand (follows the mouse). Origin = the tip of the wand.
     const w = PLAYER_PROPS.wand;
-    this.wand = this.add.image(w.startX, w.startY, 'fantasy-wand').setOrigin(0.15, 0.04).setDepth(DEPTH.players);
+    this.wand = this.add.image(wandAt.x, wandAt.y, 'fantasy-wand').setOrigin(0.15, 0.04).setDepth(DEPTH.players);
     this.wand.setScale(w.height / this.wand.height);
-    this.wandBadge = this.addPlayerBadge('SPELER 2', 0xd23636);
-    this.wandAt = { x: w.startX, y: w.startY };
-    this.placeWand(this.wandAt.x, this.wandAt.y);
+    this.wandBadge = this.addPlayerBadge('SPELER 2', PLAYER_COLOR.p2);
+    this.wandAt = { ...wandAt };
+    this.placeWand(wandAt.x, wandAt.y);
 
     for (const prop of [this.umbrellaOpen, this.umbrellaClosed, this.wand, this.umbrellaBadge, this.wandBadge]) {
-      popIn(this, prop, { delay: 300 });
+      popIn(this, prop, { duration: 350 });
     }
 
-    this.time.delayedCall(SPELL.firstDelay, () => this.showNextSpell());
-    this.time.delayedCall(ATTACK.firstDelay, () => this.witchAttack());
+    // The hands go: the wand and the umbrella are the cursors now.
+    this.pointers.hide();
+    this.input.setDefaultCursor('none');
+    this.playersReady = true;
+    // Player 1 (controller) moves the umbrella, player 2 (mouse) the wand.
+    inputManager.on('cursormove', this.moveUmbrella, this);
+    this.input.on('pointermove', this.moveWand, this);
   }
 
   private removeGameplayInput() {
@@ -899,6 +1097,7 @@ export class FantasyScene extends Scene {
     this.umbrellaOpen.setPosition(x, y);
     this.umbrellaClosed.setPosition(x, y);
     this.positionBadge(this.umbrellaBadge, x, y + PLAYER_PROPS.umbrella.badgeY);
+    this.checkPracticeUmbrella();
   }
 
   private toggleUmbrella() {
@@ -906,6 +1105,7 @@ export class FantasyScene extends Scene {
     this.umbrellaClosed.setVisible(!this.isUmbrellaOpen);
     this.umbrellaOpen.setVisible(this.isUmbrellaOpen);
     this.updateSpellLock();
+    this.checkPracticeUmbrella();
     // A little pop, so you see it change.
     const shown = this.isUmbrellaOpen ? this.umbrellaOpen : this.umbrellaClosed;
     const scale = shown.scale;
@@ -922,7 +1122,7 @@ export class FantasyScene extends Scene {
 
     if (MOVE_KEYS[key]) {
       // Outside the game itself the keys keep their normal job (D = debug panel).
-      if (event.type === 'keydown' && this.state !== 'playing') return;
+      if (event.type === 'keydown' && !this.playersReady) return;
       event.preventDefault();
       event.stopImmediatePropagation();
       if (event.type === 'keydown') this.heldKeys.add(key);
@@ -935,7 +1135,7 @@ export class FantasyScene extends Scene {
   };
 
   update(_time: number, delta: number) {
-    if (this.state !== 'playing' || this.heldKeys.size === 0 || inputManager.getMode() !== 'mouse') return;
+    if (!this.playersReady || this.heldKeys.size === 0 || inputManager.getMode() !== 'mouse') return;
     // Player 1 on the keyboard: the held keys move the umbrella.
     let dx = 0;
     let dy = 0;
@@ -963,6 +1163,7 @@ export class FantasyScene extends Scene {
     const to = { x: pointer.worldX, y: pointer.worldY };
     this.wandAt = to;
     this.placeWand(to.x, to.y);
+    this.tracePractice(from, to);
     this.traceSpell(from, to);
   }
 
@@ -987,14 +1188,7 @@ export class FantasyScene extends Scene {
     const quote = this.makeQuoteCard(spell);
     const quoteHeight = (QUOTE.svgHeight * QUOTE.width) / QUOTE.svgWidth;
     quote.setPosition(QUOTE.x, -SPELL_AREA.size * SPELL_AREA.backdrop - quoteHeight / 2 + QUOTE.overlap);
-    // White dots with a dark edge, so they show on any background.
-    const dotsGraphics = this.add.graphics();
-    local.forEach((d) => dotsGraphics.fillStyle(0x03314e, 0.9).fillCircle(d.x, d.y, 10).fillStyle(0xffffff, 1).fillCircle(d.x, d.y, 7));
-    this.drawArrowHead(dotsGraphics, local[local.length - 2], local[local.length - 1]);
-    const traced = this.add.graphics();
-    // Where to start: a pulsing yellow circle.
-    const start = this.add.circle(local[0].x, local[0].y, 26, SPELL_COLOR, 0.9);
-    this.tweens.add({ targets: start, scale: { from: 0.8, to: 1.3 }, alpha: { from: 1, to: 0.5 }, duration: 600, yoyo: true, repeat: -1 });
+    const { dots: dotsGraphics, traced, start } = this.drawSpellDots(local);
 
     // "Wait": shown while the umbrella is open. Just white text in our font.
     const lock = this.add
@@ -1027,20 +1221,7 @@ export class FantasyScene extends Scene {
     // While the umbrella is open, the wizard has to wait.
     if (!spell || this.state !== 'playing' || this.isUmbrellaOpen || !spell.trace.feed(from, to)) return;
 
-    // Draw the part that has been done in red.
-    const done = spell.local.slice(0, spell.trace.reached);
-    spell.traced.clear();
-    spell.start.setVisible(done.length === 0);
-    if (done.length > 0) {
-      spell.traced.lineStyle(16, SPELL_COLOR, 1);
-      if (done.length > 1) {
-        spell.traced.beginPath().moveTo(done[0].x, done[0].y);
-        done.slice(1).forEach((d) => spell.traced.lineTo(d.x, d.y));
-        spell.traced.strokePath();
-      }
-      spell.traced.fillStyle(SPELL_COLOR, 1).fillCircle(done[done.length - 1].x, done[done.length - 1].y, 14);
-    }
-
+    this.drawTraced(spell.traced, spell.start, spell.local, spell.trace.reached);
     if (spell.trace.done) this.castSpell();
   }
 
@@ -1104,6 +1285,36 @@ export class FantasyScene extends Scene {
     source.setPosition(sourceAt.x, sourceAt.y).setAngle(QUOTE.angle);
 
     return this.add.container(0, 0, [card, words, source]);
+  }
+
+  /**
+   * A movement to follow: white dots with a dark edge (so they show on any
+   * background), an arrow at the end, and a pulsing red circle where to start.
+   * `traced` is for the part that has been done (see drawTraced).
+   */
+  private drawSpellDots(local: Point[]) {
+    const dots = this.add.graphics();
+    local.forEach((d) => dots.fillStyle(0x03314e, 0.9).fillCircle(d.x, d.y, 10).fillStyle(0xffffff, 1).fillCircle(d.x, d.y, 7));
+    this.drawArrowHead(dots, local[local.length - 2], local[local.length - 1]);
+    const traced = this.add.graphics();
+    const start = this.add.circle(local[0].x, local[0].y, 26, SPELL_COLOR, 0.9);
+    this.tweens.add({ targets: start, scale: { from: 0.8, to: 1.3 }, alpha: { from: 1, to: 0.5 }, duration: 600, yoyo: true, repeat: -1 });
+    return { dots, traced, start };
+  }
+
+  /** Draw the part of the movement that has been done (the first `reached` dots) in red. */
+  private drawTraced(traced: GameObjects.Graphics, start: GameObjects.Arc, local: Point[], reached: number) {
+    const done = local.slice(0, reached);
+    traced.clear();
+    start.setVisible(done.length === 0);
+    if (done.length === 0) return;
+    traced.lineStyle(16, SPELL_COLOR, 1);
+    if (done.length > 1) {
+      traced.beginPath().moveTo(done[0].x, done[0].y);
+      done.slice(1).forEach((d) => traced.lineTo(d.x, d.y));
+      traced.strokePath();
+    }
+    traced.fillStyle(SPELL_COLOR, 1).fillCircle(done[done.length - 1].x, done[done.length - 1].y, 14);
   }
 
   private drawArrowHead(g: GameObjects.Graphics, from: { x: number; y: number }, to: { x: number; y: number }) {
@@ -1339,17 +1550,7 @@ export class FantasyScene extends Scene {
 
   private launchAttack(kind: AttackKind, from: { x: number; y: number }, target: { x: number; y: number }) {
     // Where it will land: a red circle on the floor, so player 1 knows where to hold the umbrella.
-    const marker = this.add.graphics().setDepth(DEPTH.marker).setPosition(target.x, target.y);
-    // In player 1's colour (blue): it's player 1 who has to go there.
-    // A white border around it (like the stickers), so it stands out on the dark floor.
-    marker
-      .fillStyle(PLAYER_COLOR.p1, 0.45)
-      .fillEllipse(0, 0, 220, 90)
-      .lineStyle(16, 0xffffff, 1)
-      .strokeEllipse(0, 0, 220, 90)
-      .lineStyle(8, PLAYER_COLOR.p1, 1)
-      .strokeEllipse(0, 0, 220, 90);
-    this.tweens.add({ targets: marker, scale: { from: 0.85, to: 1.1 }, duration: 400, yoyo: true, repeat: -1 });
+    const marker = this.drawLandingCircle(target.x, target.y).setDepth(DEPTH.marker);
 
     const key = kind === 'monkey' ? 'fantasy-monkey' : 'fantasy-potion';
     const sprite = this.add.image(from.x, from.y, key).setDepth(DEPTH.projectile);
@@ -1384,6 +1585,24 @@ export class FantasyScene extends Scene {
         else this.attackLands(attack);
       },
     });
+  }
+
+  /**
+   * A pulsing blue circle on the floor: where player 1 has to hold the umbrella.
+   * In player 1's colour, with a white border (like the stickers) so it stands out on the dark floor.
+   */
+  private drawLandingCircle(x: number, y: number): GameObjects.Graphics {
+    const circle = this.add
+      .graphics()
+      .setPosition(x, y)
+      .fillStyle(PLAYER_COLOR.p1, 0.45)
+      .fillEllipse(0, 0, 220, 90)
+      .lineStyle(16, 0xffffff, 1)
+      .strokeEllipse(0, 0, 220, 90)
+      .lineStyle(8, PLAYER_COLOR.p1, 1)
+      .strokeEllipse(0, 0, 220, 90);
+    this.tweens.add({ targets: circle, scale: { from: 0.85, to: 1.1 }, duration: 400, yoyo: true, repeat: -1 });
+    return circle;
   }
 
   /** Is the open umbrella on this spot (the circle where the attack lands)? */
@@ -1457,6 +1676,7 @@ export class FantasyScene extends Scene {
       this.spell = undefined;
     }
     this.removeGameplayInput();
+    this.playersReady = false;
 
     // The witch holds her face for a moment...
     this.witch.setTexture(WITCH_POSES.hit);
