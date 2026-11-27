@@ -36,25 +36,33 @@ const STYLE = `
   .kb-pointer {
     position: fixed; left: 0; top: 0; z-index: 20; pointer-events: none; display: none;
   }
-  .kb-star {
-    /* The star itself is centered on the given point (that is where the kids should point). */
+  .kb-target {
+    /* The target itself is centered on the given point (that is where the kids should point). */
     position: fixed; left: 0; top: 0; z-index: 15; pointer-events: none; display: none;
     transform: translate(-50%, -50%);
     font: 600 28px/1.2 Oswald, sans-serif; color: #fff; text-shadow: 0 2px 6px rgba(0, 0, 0, 0.5);
   }
-  .kb-star span {
+  .kb-target span {
     position: absolute; bottom: 100%; left: 50%; transform: translateX(-50%);
     margin-bottom: 0.4em; white-space: nowrap;
   }
-  .kb-star svg { display: block; animation: kb-star-pulse 1s ease-in-out infinite alternate; }
-  @keyframes kb-star-pulse { from { transform: scale(0.9) rotate(-6deg); } to { transform: scale(1.08) rotate(6deg); } }
+  .kb-target svg { display: block; overflow: visible; filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.3)); }
+  /* The ring fills up (clockwise from the top) while everyone holds still. */
+  .kb-target .fill { transform: rotate(-90deg); transform-origin: 50% 50%; stroke-linecap: round; transition: stroke-dashoffset 0.08s linear; }
 `;
 
-/** A simple five-pointed star (for "point at the star"). */
-const STAR_SVG = `
+/**
+ * "Point at the circle": a thin, see-through ring with a dot in the middle. A white arc fills
+ * it while all players who have to calibrate hold their controller still (together).
+ */
+const RING_RADIUS = 42;
+const RING_LENGTH = 2 * Math.PI * RING_RADIUS;
+const TARGET_SVG = `
   <svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
-    <path d="M50 5 L61.8 37.6 L96.6 38.2 L69 59.4 L79 92.6 L50 72.8 L21 92.6 L31 59.4 L3.4 38.2 L38.2 37.6 Z"
-      fill="#FFD23F" stroke="#FFFFFF" stroke-width="6" stroke-linejoin="round"/>
+    <circle cx="50" cy="50" r="${RING_RADIUS}" fill="none" stroke="#FFFFFF" stroke-opacity="0.35" stroke-width="5"/>
+    <circle class="fill" cx="50" cy="50" r="${RING_RADIUS}" fill="none" stroke="#FFFFFF" stroke-width="5"
+      stroke-dasharray="${RING_LENGTH}" stroke-dashoffset="${RING_LENGTH}"/>
+    <circle cx="50" cy="50" r="4" fill="#FFFFFF"/>
   </svg>`;
 
 export class ControllerUI {
@@ -62,8 +70,8 @@ export class ControllerUI {
   private readonly button: HTMLButtonElement;
   private readonly debug: HTMLPreElement;
   private readonly arrow: HTMLImageElement;
-  private readonly star: HTMLDivElement;
-  private readonly starText: HTMLSpanElement;
+  private readonly target: HTMLDivElement;
+  private readonly targetText: HTMLSpanElement;
   private flashTimer?: number;
   private mode: InputMode = 'mouse';
   private split = false;
@@ -101,13 +109,13 @@ export class ControllerUI {
     this.arrow = this.makePointer(ARROW.src);
     this.arrow.style.width = this.arrow.style.height = `${ARROW.size}px`;
 
-    this.star = document.createElement('div');
-    this.star.className = 'kb-star';
-    this.starText = document.createElement('span');
-    this.star.innerHTML = STAR_SVG;
-    this.star.prepend(this.starText);
+    this.target = document.createElement('div');
+    this.target.className = 'kb-target';
+    this.targetText = document.createElement('span');
+    this.target.innerHTML = TARGET_SVG;
+    this.target.prepend(this.targetText);
 
-    document.body.append(panel, this.debug, this.star);
+    document.body.append(panel, this.debug, this.target);
     this.setMode('mouse');
   }
 
@@ -149,20 +157,25 @@ export class ControllerUI {
     this.debug.textContent = text;
   }
 
-  /** The arrow, with its tip at (clientX, clientY). */
-  /** "Point at the star": the star in the middle of the game, with the text above it. */
-  setStar(clientX: number, clientY: number, canvasHeight: number, text: string, visible: boolean) {
-    this.star.style.display = visible ? 'block' : 'none';
+  /**
+   * "Point at the circle", in the middle of the game, with the text above it.
+   * progress: how far the ring is filled (0..1), i.e. how long everyone has held still together.
+   */
+  setTarget(clientX: number, clientY: number, canvasHeight: number, text: string, visible: boolean, progress = 0) {
+    this.target.style.display = visible ? 'block' : 'none';
     if (!visible) return;
-    const size = canvasHeight * 0.16;
-    const svg = this.star.querySelector('svg');
+    const size = canvasHeight * 0.12;
+    const svg = this.target.querySelector('svg');
     if (svg) svg.setAttribute('width', `${size}`), svg.setAttribute('height', `${size}`);
-    this.starText.textContent = text;
-    this.star.style.fontSize = `${Math.max(16, canvasHeight * 0.045)}px`;
-    this.star.style.left = `${clientX}px`;
-    this.star.style.top = `${clientY}px`;
+    const fill = this.target.querySelector<SVGCircleElement>('.fill');
+    fill?.setAttribute('stroke-dashoffset', `${RING_LENGTH * (1 - Math.min(Math.max(progress, 0), 1))}`);
+    this.targetText.textContent = text;
+    this.target.style.fontSize = `${Math.max(14, canvasHeight * 0.035)}px`;
+    this.target.style.left = `${clientX}px`;
+    this.target.style.top = `${clientY}px`;
   }
 
+  /** The arrow, with its tip at (clientX, clientY). */
   setArrow(clientX: number, clientY: number, visible: boolean) {
     this.place(this.arrow, clientX - ARROW.tipX, clientY - ARROW.tipY, visible);
   }
