@@ -104,18 +104,16 @@ const START_BUTTON = { x: GAME_WIDTH / 2, y: 1140, width: 755 };
 const CARD_LEAN = 5;
 /** Cards and the intro sign stand with the end of their stick well below the screen. */
 const CARD_BOTTOM_Y = GAME_HEIGHT + 110;
-/** Info cards shown via the info buttons disappear after this many ms. */
-const INFO_CARD_TIME = 4000;
-/** When nobody moves or clicks for this long during the game, the explanation card comes up again. */
-const IDLE_HINT_TIME = 15_000;
-
-/** Info buttons in the bottom corners: blue = player 1 (left), red = player 2 (right). */
-const INFO_BUTTONS = {
-  p1: { key: 'gs-info-blue', file: 'info-blue.svg', x: 75, cardX: CARDS.introP1.x },
-  p2: { key: 'gs-info-red', file: 'info-red.svg', x: GAME_WIDTH - 75, cardX: CARDS.introP2.x },
-};
-const INFO_BUTTON_Y = GAME_HEIGHT - 75;
-const INFO_BUTTON_SIZE = 95;
+/**
+ * When the player whose turn it is does nothing for this long (ms), their explanation card comes up
+ * again (in case they forgot what to do). It goes away after HINT_CARD_TIME, or at their next press.
+ */
+const IDLE_HINT_TIME = 10_000;
+const HINT_CARD_TIME = 4000;
+/** Smaller pointer movements (game pixels per move) don't count as doing something (a controller always trembles a bit). */
+const IDLE_MOVE_THRESHOLD = 4;
+/** Where the hint card stands: player 1 on the left, player 2 on the right. */
+const HINT_CARD_X = { p1: CARDS.introP1.x, p2: CARDS.introP2.x };
 
 interface FindDef {
   key: string;
@@ -160,7 +158,6 @@ const DEPTH = {
   overlay: 10,
   active: 11,
   quote: 12,
-  infoButton: 14,
   card: 15,
   tool: 20,
 };
@@ -216,7 +213,6 @@ export class GeschiedenisScene extends Scene {
   private introBrush?: GameObjects.Image;
   private introTrowel?: GameObjects.Image;
   private introPress?: GameObjects.Image;
-  private infoButtons: GameObjects.Image[] = [];
   /** The players' hands, on the title, intro and end screens (while playing, the tools are the cursor). */
   private pointers!: PlayerPointers;
   private card?: GameObjects.Image;
@@ -259,9 +255,6 @@ export class GeschiedenisScene extends Scene {
     this.load.svg(INTRO_SIGN.key, PATH + INTRO_SIGN.file, { scale: RENDER_SCALE });
     preloadStartButton(this);
     Object.values(CARDS).forEach((card) => this.load.svg(card.key, PATH + card.file, { scale: RENDER_SCALE }));
-    Object.values(INFO_BUTTONS).forEach((info) =>
-      this.load.svg(info.key, PATH + info.file, { width: INFO_BUTTON_SIZE * RENDER_SCALE, height: INFO_BUTTON_SIZE * RENDER_SCALE }),
-    );
   }
 
   create() {
@@ -286,7 +279,6 @@ export class GeschiedenisScene extends Scene {
     this.introBrush = undefined;
     this.introTrowel = undefined;
     this.introPress = undefined;
-    this.infoButtons = [];
     this.quote = undefined;
     this.sparkles = [];
     this.card = undefined;
@@ -350,7 +342,7 @@ export class GeschiedenisScene extends Scene {
     // Cap the distance so jumping the pointer around doesn't count as digging.
     const moved = Math.min(PMath.Distance.Between(this.lastPointer.x, this.lastPointer.y, x, y), 100);
     this.lastPointer.set(x, y);
-    if (moved > 0) this.lastActivity = this.time.now;
+    if (moved >= IDLE_MOVE_THRESHOLD) this.lastActivity = this.time.now;
 
     this.trowel.setPosition(x, y);
     this.brush.setPosition(x, y);
@@ -369,7 +361,7 @@ export class GeschiedenisScene extends Scene {
   /** "The button" (mouse click for now, ESP32 button later). */
   private pressButton() {
     this.lastActivity = this.time.now;
-    // Any button press puts away an info card that is still up.
+    // Any button press puts away an explanation card that is still up.
     this.hideCard();
 
     if (this.state === 'titleReady') this.leaveTitle();
@@ -562,10 +554,6 @@ export class GeschiedenisScene extends Scene {
       this.signs.push({ container, cover, boardX, boardY, boardW, boardH, filled: false });
     });
 
-
-    this.addInfoButton('p2', 1000);
-    this.addInfoButton('p1', 1100);
-
     this.buryNext();
 
     this.time.delayedCall(1100, () => {
@@ -588,15 +576,15 @@ export class GeschiedenisScene extends Scene {
           ? 'p2'
           : undefined;
 
-    // Player 2's turn: the mouse/trackpad moves the brush, even with a controller connected
-    // (that controller is player 1's). Player 1's turn: the controller, if connected.
+    // Player 2's turn: player 2 moves the brush (the mouse, or player 2's controller).
+    // Player 1's turn: player 1's controller, if connected.
     inputManager.setPointerOwner(player === 'p2' ? 2 : undefined);
     if (!player) return;
 
     const now = this.time.now;
     if (now - this.lastActivity < IDLE_HINT_TIME) return;
     this.lastActivity = now; // next hint after another IDLE_HINT_TIME of nothing
-    if (!this.card) this.showInfo(player);
+    if (!this.card) this.showHint(player);
   }
 
   /** A card on a stick that rises from below and sways. */
@@ -620,34 +608,18 @@ export class GeschiedenisScene extends Scene {
     riseIn(this, this.card, { gentle: true });
   }
 
-  /** Info button: shows the explanation for what that player has to do right now. */
-  private addInfoButton(player: keyof typeof INFO_BUTTONS, delay: number) {
-    const info = INFO_BUTTONS[player];
-    const button = this.add
-      .image(info.x, INFO_BUTTON_Y, info.key)
-      .setScale(1 / RENDER_SCALE)
-      .setDepth(DEPTH.infoButton)
-      .setInteractive()
-      .on('pointerup', (_p: Input.Pointer, _x: number, _y: number, event: Types.Input.EventData) => {
-        // Don't let this click also count as "the button".
-        event.stopPropagation();
-        this.showInfo(player);
-      });
-    popIn(this, button, { delay });
-    this.infoButtons.push(button);
-  }
-
-  private showInfo(player: keyof typeof INFO_BUTTONS) {
+  /** The explanation card for what that player has to do right now (when they seem to have forgotten). */
+  private showHint(player: 'p1' | 'p2') {
     if (this.state === 'done') return;
 
     const card =
       player === 'p1'
         ? this.state === 'pickUp' ? CARDS.pickUp : CARDS.introP1
         : this.state === 'place' ? CARDS.place : CARDS.introP2;
-    this.showCard(card, INFO_BUTTONS[player].cardX);
+    this.showCard(card, HINT_CARD_X[player]);
 
     const shown = this.card;
-    this.time.delayedCall(INFO_CARD_TIME, () => {
+    this.time.delayedCall(HINT_CARD_TIME, () => {
       if (this.card === shown) this.hideCard();
     });
   }
@@ -790,7 +762,7 @@ export class GeschiedenisScene extends Scene {
     this.active = find;
     hop(this, container);
 
-    // Explain the first time only; after that the info button helps.
+    // Explain the first time only; after that the card comes back when they do nothing for a while (update).
     if (!this.seenCard.pickUp) {
       this.seenCard.pickUp = true;
       // Put the card on the other side of the screen so it doesn't cover the find.
@@ -1053,15 +1025,8 @@ export class GeschiedenisScene extends Scene {
     this.setTool('none');
     this.active = undefined;
 
-    // No more explanation needed: the info buttons (and any open card) go away.
+    // No more explanation needed: an open card goes away.
     this.hideCard();
-    const buttons = this.infoButtons;
-    this.infoButtons = [];
-    buttons.forEach((button) => {
-      button.disableInteractive();
-      this.tweens.killTweensOf(button);
-      this.tweens.add({ targets: button, scale: 0, duration: 300, ease: 'Back.In', onComplete: () => button.destroy() });
-    });
 
     this.tweens.add({ targets: book.container, alpha: 0, scale: 1.2, duration: 400 });
     this.tweens.add({ targets: this.overlay, alpha: 0.8, duration: 400 });

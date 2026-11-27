@@ -27,6 +27,13 @@ const PATH = 'assets/menu/';
 const TITLE = { x: GAME_WIDTH / 2, y: 320, scale: 0.87 };
 const TITLE_BOOK = { x: 1648, y: 800, scale: 0.87 };
 const TITLE_RIBBON = { x: 288, y: 450, scale: 0.87 };
+/**
+ * book.svg and lint.svg have a drop shadow (to the bottom right), which makes the files bigger
+ * than the drawing. These are the size of the drawing itself (SVG pixels), so the book turns
+ * around its own middle and the ribbon hangs from the middle of its top, as before the shadow.
+ */
+const BOOK_DRAWING = { width: 251, height: 257 };
+const RIBBON_DRAWING = { width: 96 };
 /** "druk op een knop om het spel te starten" */
 const PRESS_TEXT = { x: GAME_WIDTH / 2, y: 880 };
 
@@ -57,7 +64,7 @@ const GENRES: Genre[] = [
   { key: 'menu-genre-geschiedenis', file: 'geschiedenis.svg', scene: 'GeschiedenisScene', x: 240, labelY: 293, svgStringX: 206.5, svgLabelY: 462, svgBookY: 763 },
   { key: 'menu-genre-grappig', file: 'grappig.svg', scene: 'KomedieScene', x: 537, labelY: 658, svgStringX: 323.5, svgLabelY: 1054, svgBookY: 1345 },
   { key: 'menu-genre-mystery', file: 'mystery.svg', scene: 'DetectiveScene', x: 847, labelY: 238, svgStringX: 434.5, svgLabelY: 745, svgBookY: 1011 },
-  { key: 'menu-genre-adventure', file: 'adventure.svg', x: 1230, labelY: 468, svgStringX: 206.5, svgLabelY: 1179, svgBookY: 1441 },
+  { key: 'menu-genre-adventure', file: 'adventure.svg', scene: 'AdventureScene', x: 1230, labelY: 468, svgStringX: 206.5, svgLabelY: 1179, svgBookY: 1441 },
   { key: 'menu-genre-fantasy', file: 'fantasy.svg', scene: 'FantasyScene', x: 1604, labelY: 256, svgStringX: 148.5, svgLabelY: 728, svgBookY: 1025 },
 ];
 
@@ -95,8 +102,8 @@ export class MenuScene extends Scene {
     svg('menu-ribbon', 'lint.svg', { scale: RENDER_SCALE });
     svg('menu-genre-sign', 'intro-sign.svg', { scale: RENDER_SCALE });
     GENRES.forEach((genre) => svg(genre.key, genre.file, { scale: RENDER_SCALE }));
-    // Loaded as text: split into one image per letter (see svgParts.ts).
-    this.load.text('menu-title', PATH + 'landvankaboeko.svg');
+    // Loaded as text: split into one image per letter (see svgParts.ts). The letters keep their drop shadow.
+    this.load.text('menu-title', 'assets/general/kaboeko.svg');
     PlayerPointers.preload(this);
   }
 
@@ -172,15 +179,19 @@ export class MenuScene extends Scene {
     const done = 100 + title.parts.length * 70;
 
     // The ribbon hangs from its top, the book wobbles at the end of the word.
-    const ribbon = this.add
-      .image(TITLE_RIBBON.x, TITLE_RIBBON.y, 'menu-ribbon')
-      .setOrigin(0.5, 0)
+    const ribbon = this.add.image(TITLE_RIBBON.x, TITLE_RIBBON.y, 'menu-ribbon');
+    ribbon
+      .setOrigin(Math.min(0.5, (RIBBON_DRAWING.width / 2) * (RENDER_SCALE / ribbon.width)), 0)
       .setScale(TITLE_RIBBON.scale / RENDER_SCALE)
       .setDepth(DEPTH.content);
     dropIn(this, ribbon, { delay: done, distance: 700, onComplete: () => sway(this, ribbon, 6, 1600) });
 
-    const book = this.add
-      .image(TITLE_BOOK.x, TITLE_BOOK.y, 'menu-book')
+    const book = this.add.image(TITLE_BOOK.x, TITLE_BOOK.y, 'menu-book');
+    book
+      .setOrigin(
+        Math.min(0.5, (BOOK_DRAWING.width / 2) * (RENDER_SCALE / book.width)),
+        Math.min(0.5, (BOOK_DRAWING.height / 2) * (RENDER_SCALE / book.height)),
+      )
       .setScale(TITLE_BOOK.scale / RENDER_SCALE)
       .setDepth(DEPTH.content);
     riseIn(this, book, {

@@ -1,7 +1,7 @@
 import { GameObjects, Geom, Input, Math as PMath, Scene, Tweens, type Types } from 'phaser';
 import { GAME_HEIGHT, GAME_WIDTH, RENDER_SCALE, setupCamera } from '../config';
 import { inputManager } from '../input/InputManager';
-import { PlayerPointers } from '../playerPointers';
+import { addHandImage, PlayerPointers } from '../playerPointers';
 import { dropIn, popIn, riseIn, sinkOut, slideIn, sway, swing } from '../puppet';
 import { loadSvgParts } from '../svgParts';
 import { addStartButton, preloadStartButton } from '../ui';
@@ -127,6 +127,13 @@ const SUSPECTS: {
  * Positions are fractions of the suspect's height, from his top / center.
  */
 const WRONG = { foutWidth: 200, foutX: 0.18, foutY: 0.02, quoteWidth: 470, quoteY: 0.72, time: 3000 };
+
+/**
+ * Accusation with two players: both have to click the same suspect. A player's choice shows as
+ * their hand (pointing down) above that suspect's head: height, how far left (player 1) or
+ * right (player 2) of the middle, and how far above the head (game pixels).
+ */
+const CHOICE_HAND = { height: 90, dx: 34, aboveHead: 55 };
 
 /** The end: the thief big on the left with his quote, the "Proficiat!" sign on the right. */
 const ENDING = {
@@ -282,6 +289,9 @@ export class DetectiveScene extends Scene {
   /** Accusation: the sign and notebook, and the "FOUT!" + quote of a wrong suspect. */
   private accuseObjects: GameObjects.Image[] = [];
   private wrongObjects: GameObjects.Image[] = [];
+  /** Accusation with two players: who chose which suspect, and their hand above it. */
+  private accuseChoice: Partial<Record<1 | 2, SuspectState>> = {};
+  private choiceHands: Partial<Record<1 | 2, GameObjects.Container>> = {};
 
   constructor() {
     super('DetectiveScene');
@@ -352,6 +362,8 @@ export class DetectiveScene extends Scene {
     this.foldTimer = undefined;
     this.accuseObjects = [];
     this.wrongObjects = [];
+    this.accuseChoice = {};
+    this.choiceHands = {};
     this.hoverClue = undefined;
     this.seenSearchCard = { p1: false, p2: false };
     this.searchCard = {};
@@ -882,7 +894,7 @@ export class DetectiveScene extends Scene {
       if (!isPlayer1) this.tryCatch(this.netPoint());
     } else if (this.state === 'accuse') {
       // Either player: a click on the suspect, at their own hand.
-      this.tryAccuse(isPlayer1 ? this.glassPoint() : this.netPoint());
+      this.tryAccuse(isPlayer1 ? this.glassPoint() : this.netPoint(), isPlayer1 ? 1 : 2);
     }
   }
 
@@ -1038,12 +1050,66 @@ export class DetectiveScene extends Scene {
     this.time.delayedCall(1600, () => (this.state = 'accuse'));
   }
 
-  /** A click on the suspect you think is the thief. */
-  private tryAccuse(point: { x: number; y: number }) {
+  /**
+   * A click on the suspect you think is the thief. With two players (a controller in use), both
+   * have to choose the same one: each choice shows as that player's hand above the suspect, and
+   * only when both hands are above the same suspect does it count. With just the mouse, one click.
+   */
+  private tryAccuse(point: { x: number; y: number }, player: 1 | 2) {
     const suspect = this.suspects.find((s) => s.image.getBounds().contains(point.x, point.y));
     if (!suspect) return;
+    if (inputManager.getMode() !== 'tilt') {
+      this.accuse(suspect);
+      return;
+    }
+
+    this.chooseSuspect(player, suspect);
+    const other = player === 1 ? 2 : 1;
+    if (this.accuseChoice[other] !== suspect) return;
+    // Both chose this one.
+    this.time.delayedCall(250, () => {
+      if (this.state !== 'accuse') return;
+      this.clearChoices();
+      this.accuse(suspect);
+    });
+  }
+
+  private accuse(suspect: SuspectState) {
     if (suspect.def.thief) this.catchThief(suspect);
     else this.showWrong(suspect);
+  }
+
+  /** A player's choice: their hand (pointing down) above the suspect's head. Choosing another one moves it. */
+  private chooseSuspect(player: 1 | 2, suspect: SuspectState) {
+    swing(this, suspect.image, 4);
+    if (this.accuseChoice[player] === suspect) return;
+    this.accuseChoice[player] = suspect;
+    this.choiceHands[player]?.destroy();
+
+    const { image } = suspect;
+    const top = image.y - image.displayHeight;
+    // The player's hand turned upside down (pointing at the head), with its drop shadow.
+    const hand = addHandImage(
+      this,
+      player,
+      image.x + (player === 1 ? -1 : 1) * CHOICE_HAND.dx,
+      top - CHOICE_HAND.aboveHead,
+      CHOICE_HAND.height,
+      180,
+    ).setDepth(DEPTH.message);
+    popIn(this, hand);
+    // Pointing: a little bob up and down.
+    this.tweens.add({ targets: hand, y: hand.y + 12, duration: 450, yoyo: true, repeat: -1, ease: 'Sine.InOut' });
+    this.choiceHands[player] = hand;
+  }
+
+  private clearChoices() {
+    this.accuseChoice = {};
+    for (const hand of Object.values(this.choiceHands)) {
+      this.tweens.killTweensOf(hand);
+      this.tweens.add({ targets: hand, scale: 0, duration: 200, onComplete: () => hand.destroy() });
+    }
+    this.choiceHands = {};
   }
 
   /** Wrong: "FOUT!" next to his head and his quote over him; they can choose again. */

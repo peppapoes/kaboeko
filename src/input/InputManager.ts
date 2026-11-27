@@ -169,6 +169,13 @@ class InputManager extends Events.EventEmitter {
   private lastFrame = performance.now();
   private messageCount = 0;
   private messagesPerSecond = 0;
+  /** Per player: messages since the last count, and messages per second (for the debug panel). */
+  private readonly playerMessages = new Map<number, number>();
+  private readonly playerRates = new Map<number, number>();
+  /** The last {"error": ...} line from a controller, for the debug panel. */
+  private lastError?: { text: string; time: number };
+  /** Which port sends each player's data (one port may send both players). */
+  private readonly playerPorts = new Map<ControllerPlayer, SerialController>();
   private rateStart = performance.now();
   private lastDebug = 0;
 
@@ -246,11 +253,12 @@ class InputManager extends Events.EventEmitter {
   }
 
   /**
-   * "Point at the star": shows a star in the middle of the screen. As soon as
-   * player 1's controller is held still for a moment, that becomes the center.
-   * Call this at the start of every minigame. Does nothing without a
-   * controller, or in 'rate' mode. The star only shows while the controller
-   * is in use, and goes away when the scene ends.
+   * "Point at the circle": shows a circle in the middle of the screen whose ring
+   * fills up while all players (with an MPU-6050) hold their controller still at the
+   * same time. When it is full (STILL_TIME), those directions become their centers.
+   * Call this at the start of every minigame. Does nothing without a controller,
+   * for a Nunchuk, or in 'rate' mode. It goes away when everyone is done, or when
+   * the scene ends.
    */
   startRecenter(scene?: Scene) {
     if (CFG.CONTROL_MODE !== 'point' || this.controllers.size === 0) return;
@@ -313,7 +321,8 @@ class InputManager extends Events.EventEmitter {
     const at = this.motion[2].cursor;
     this.sendMouseEvent('mousedown', button, at);
     this.sendMouseEvent('mouseup', button, at);
-    this.emit('select', { ...at, player: this.splitScene ? MOUSE_PLAYER : undefined });
+    // Always with the player number: this click comes from player 2's controller.
+    this.emit('select', { ...at, player: MOUSE_PLAYER });
   }
 
   /** Is player 2's controller in use (sending data, and not switched to the mouse with T)? */
@@ -525,8 +534,11 @@ class InputManager extends Events.EventEmitter {
       onMessage: (message) => this.onMessage(message, controller),
       onClose: () => {
         this.controllers.delete(controller);
+        // Its players are free again (for a controller that connects later).
+        for (const [player, port] of this.playerPorts) if (port === controller) this.playerPorts.delete(player);
         this.ui?.setConnected(this.controllers.size);
-        this.ui?.flash(controller.player ? `controller P${controller.player} disconnected` : 'controller disconnected');
+        const players = [...new Set(controller.players.values())].sort();
+        this.ui?.flash(players.length ? `controller (${players.map((n) => `P${n}`).join(' + ')}) disconnected` : 'controller disconnected');
       },
     });
     this.controllers.add(controller);
@@ -550,19 +562,26 @@ class InputManager extends Events.EventEmitter {
   }
 
   /**
-   * Which player a controller (port) is: the "p" of its first message, unless another connected
-   * controller already is that player; then it becomes the other one (so two controllers that
-   * both say PLAYER = 1 still become player 1 and 2). Stays the same while it is connected.
+   * Which player a message is: its "p". One port can send both players (one ESP32 with two
+   * sensors), so every line is routed by its own p. Only when another port already sends that
+   * player does this port's p become the other player, so two ESP32s that both say PLAYER = 1
+   * still become player 1 and 2. Stays the same per port and p while connected.
    */
   private playerFor(controller: SerialController, wanted: unknown): ControllerPlayer | undefined {
-    if (controller.player) return controller.player;
     if (wanted !== 1 && wanted !== 2) return undefined;
-    const taken = (player: ControllerPlayer) => [...this.controllers].some((c) => c !== controller && c.player === player);
-    const player: ControllerPlayer = taken(wanted) ? (wanted === 1 ? 2 : 1) : wanted;
-    if (taken(player)) return undefined; // already two controllers
-    controller.player = player;
-    if (player !== wanted) console.info(`[controller] says player ${wanted}, but that one is taken: it is player ${player}`);
-    this.ui?.flash(`controller = P${player}`);
+    const known = controller.players.get(wanted);
+    if (known) return known;
+
+    const takenByOther = (player: ControllerPlayer) => {
+      const port = this.playerPorts.get(player);
+      return !!port && port !== controller && this.controllers.has(port);
+    };
+    const player: ControllerPlayer = takenByOther(wanted) ? (wanted === 1 ? 2 : 1) : wanted;
+    if (takenByOther(player)) return undefined; // both players already come from other ports
+    this.playerPorts.set(player, controller);
+    controller.players.set(wanted, player);
+    if (player !== wanted) console.info(`[controller] a second port says player ${wanted}: it is player ${player}`);
+    this.ui?.flash(`P${player} connected`);
     return player;
   }
 
@@ -573,6 +592,7 @@ class InputManager extends Events.EventEmitter {
     }
     if (typeof message.error === 'string') {
       console.warn('[controller]', message.error);
+      this.lastError = { text: message.error, time: performance.now() };
       return;
     }
 
@@ -586,6 +606,7 @@ class InputManager extends Events.EventEmitter {
 
     const now = performance.now();
     this.messageCount++;
+    this.playerMessages.set(p, (this.playerMessages.get(p) ?? 0) + 1);
 
     let state = this.players.get(p);
     // First data from this controller, or first after a gap: (re)calibrate.
@@ -654,9 +675,12 @@ class InputManager extends Events.EventEmitter {
   // Star recentering ("point at the star")
   // ---------------------------------------------------------------------------
 
-  /** Recenter a controller as soon as it has been (almost) still for STILL_TIME (each player on their own). */
+  /**
+   * Keep track of how long this controller has been (almost) still. Everyone is recentered
+   * together, once all players who have to calibrate have held still at the same time for STILL_TIME.
+   */
   private checkStill(state: PlayerState, now: number) {
-    const { STILL_TIME, STILL_TOLERANCE } = CFG.RECENTER;
+    const { STILL_TOLERANCE } = CFG.RECENTER;
     const player = state.player as ControllerPlayer;
     let samples = this.stillSamples.get(player) ?? [];
     const pitch = state[CFG.POINT.PITCH_AXIS];
@@ -669,30 +693,55 @@ class InputManager extends Events.EventEmitter {
     const moved = samples.some((s) => Math.abs(s.pitch - pitch) > STILL_TOLERANCE || Math.abs(s.yaw - yaw) > STILL_TOLERANCE);
     if (moved) samples = [{ time: now, pitch, yaw }];
     this.stillSamples.set(player, samples);
-    if (moved || now - samples[0].time < STILL_TIME) return;
-
-    // Held still long enough: the average of this moment is the new center.
-    const avg = (key: 'pitch' | 'yaw') => samples.reduce((sum, s) => sum + s[key], 0) / samples.length;
-    const centerPitch = avg('pitch');
-    setCenter(
-      state,
-      CFG.POINT.PITCH_AXIS === 'x' ? centerPitch : state.x,
-      CFG.POINT.PITCH_AXIS === 'y' ? centerPitch : state.y,
-      wrapDegrees(avg('yaw')),
-    );
-    this.resetMotion(player);
-    this.ui?.flash(`P${player} calibrated`);
-    this.finishRecenter(player);
+    this.recenterTogether(now);
   }
 
-  /** This player is done with the star; when every controller in use is done, the star goes away. */
+  /** The players who still have to "point at the circle": an MPU-6050 in use, not done yet. */
+  private recenterPlayers(): ControllerPlayer[] {
+    return CONTROLLER_PLAYERS.filter(
+      (p) => this.controllerInUse(p) && this.players.get(p)?.type === 'mpu' && !this.centered.has(p),
+    );
+  }
+
+  /** How long everyone has held still together, as a part of STILL_TIME (0..1): the ring. */
+  private togetherProgress(now: number): number {
+    const players = this.recenterPlayers();
+    if (players.length === 0) return 1;
+    return Math.min(...players.map((p) => this.stillProgress(p, now)));
+  }
+
+  /** When everyone has held still together long enough, the average of that moment becomes each one's center. */
+  private recenterTogether(now: number) {
+    const players = this.recenterPlayers();
+    if (players.length === 0) {
+      this.stopRecenter();
+      return;
+    }
+    if (this.togetherProgress(now) < 1) return;
+
+    for (const player of players) {
+      const state = this.players.get(player);
+      const samples = this.stillSamples.get(player);
+      if (!state || !samples?.length) continue;
+      const avg = (key: 'pitch' | 'yaw') => samples.reduce((sum, s) => sum + s[key], 0) / samples.length;
+      const centerPitch = avg('pitch');
+      setCenter(
+        state,
+        CFG.POINT.PITCH_AXIS === 'x' ? centerPitch : state.x,
+        CFG.POINT.PITCH_AXIS === 'y' ? centerPitch : state.y,
+        wrapDegrees(avg('yaw')),
+      );
+      this.resetMotion(player);
+    }
+    this.ui?.flash('calibrated');
+    this.stopRecenter();
+  }
+
+  /** This player doesn't have to point at the circle (e.g. a Nunchuk); maybe the others are done now. */
   private finishRecenter(player: ControllerPlayer) {
     this.centered.add(player);
     this.stillSamples.delete(player);
-    const waiting = CONTROLLER_PLAYERS.some(
-      (p) => this.controllerInUse(p) && this.players.get(p)?.type === 'mpu' && !this.centered.has(p),
-    );
-    if (!waiting) this.stopRecenter();
+    this.recenterTogether(performance.now());
   }
 
   private stopRecenter() {
@@ -911,14 +960,19 @@ class InputManager extends Events.EventEmitter {
     const sceneHasOwnCursor = canvas.style.cursor === 'none';
     ui.setArrow(tip.x, tip.y, this.mode === 'tilt' && !this.splitScene && !this.mouseOwnsPointer() && !sceneHasOwnCursor);
 
-    // "Point at the star", in the middle of the game.
+    // "Point at the circle", in the middle of the game. Only for an MPU-6050 (the Nunchuk has
+    // no gyro: never a circle for it). The ring fills while everyone holds still together.
     const middle = this.toClient({ x: GAME_WIDTH / 2, y: GAME_HEIGHT / 2 });
     const height = canvas.getBoundingClientRect().height;
-    // Only for an MPU-6050 that still has to point at it (the Nunchuk has no gyro: never a star for it).
-    const waiting = CONTROLLER_PLAYERS.some(
-      (p) => this.controllerInUse(p) && this.players.get(p)?.type === 'mpu' && !this.centered.has(p),
-    );
-    ui.setStar(middle.x, middle.y, height, CFG.RECENTER.TEXT, this.recentering && waiting);
+    const visible = this.recentering && this.recenterPlayers().length > 0;
+    ui.setTarget(middle.x, middle.y, height, CFG.RECENTER.TEXT, visible, this.togetherProgress(performance.now()));
+  }
+
+  /** How long this player has been holding still, as a part of STILL_TIME (0..1). */
+  private stillProgress(player: ControllerPlayer, now: number): number {
+    const samples = this.stillSamples.get(player);
+    if (!samples?.length) return 0;
+    return Math.min(Math.max((now - samples[0].time) / CFG.RECENTER.STILL_TIME, 0), 1);
   }
 
   /** Is this scene in split mode (player 1 on the controller, player 2 on the mouse)? */
@@ -951,8 +1005,13 @@ class InputManager extends Events.EventEmitter {
 
   private updateDebug(now: number) {
     if (now - this.rateStart >= 1000) {
-      this.messagesPerSecond = Math.round((this.messageCount * 1000) / (now - this.rateStart));
+      const seconds = (now - this.rateStart) / 1000;
+      this.messagesPerSecond = Math.round(this.messageCount / seconds);
       this.messageCount = 0;
+      for (const player of CONTROLLER_PLAYERS) {
+        this.playerRates.set(player, Math.round((this.playerMessages.get(player) ?? 0) / seconds));
+        this.playerMessages.set(player, 0);
+      }
       this.rateStart = now;
     }
     if (!this.ui?.debugVisible || now - this.lastDebug < DEBUG_REFRESH_MS) return;
@@ -961,10 +1020,10 @@ class InputManager extends Events.EventEmitter {
     const p1 = this.players.get(TILT_PLAYER);
     const nunchuk = p1?.type === 'nunchuk';
     const lines = [
-      `mode      ${this.mode}${this.preferMouse ? ' (mouse chosen with T)' : ''}${this.splitScene ? '   split: P1 controller, P2 mouse' : ''}`,
+      `mode      P1 ${this.mode}${this.preferMouse ? ' (mouse chosen with T)' : ''}${this.splitScene ? '   two-player screen' : '   one-pointer screen'}`,
       `control   ${p1 ? (nunchuk ? `Nunchuk (${CFG.NUNCHUK_CONTROL})` : `MPU-6050 (${CFG.CONTROL_MODE})`) : CFG.CONTROL_MODE}` +
         (this.recentering ? '   waiting: point at the star' : ''),
-      `ports     ${this.controllers.size}   ${this.messagesPerSecond} msg/s`,
+      `ports     ${this.controllers.size}   ${this.messagesPerSecond} msg/s in total`,
       `cursor    ${this.cursor.x.toFixed(0)}, ${this.cursor.y.toFixed(0)}` +
         (nunchuk || CFG.CONTROL_MODE === 'rate' ? `   speed ${this.motion[1].velocity.x.toFixed(0)}, ${this.motion[1].velocity.y.toFixed(0)}` : ''),
       `mouse     ${this.mouse.x.toFixed(0)}, ${this.mouse.y.toFixed(0)}` +
@@ -981,22 +1040,36 @@ class InputManager extends Events.EventEmitter {
       );
     }
 
-    if (this.players.size === 0) lines.push('no controller data yet');
-    for (const s of [...this.players.values()].sort((a, b) => a.player - b.player)) {
+    // Per player: what moves them now (their controller's tilt, or the mouse), and their latest data.
+    lines.push('');
+    for (const player of CONTROLLER_PLAYERS) {
+      const s = this.players.get(player);
+      const tilt = this.controllerInUse(player);
+      const mode = tilt ? 'tilt' : player === TILT_PLAYER ? 'mouse (no data)' : 'mouse (no data: the mouse is player 2)';
+      const rate = `${this.playerRates.get(player) ?? 0} msg/s`;
+      if (!s) {
+        lines.push(`P${player}  ${mode.padEnd(16)}  ${rate}   no data yet`);
+        continue;
+      }
       const age = now - s.lastSeen;
       const seen = age > CFG.TIMEOUT_MS ? 'no data' : `${age.toFixed(0)} ms ago`;
       if (s.type === 'nunchuk') {
         lines.push(
-          `P${s.player} nunchuk  joy ${String(s.jx).padStart(4)}, ${String(s.jy).padStart(4)}  C ${s.bc ? 1 : 0}  Z ${s.bz ? 1 : 0}  shake ${s.shake ? 1 : 0}`,
-          `          tilt x ${s.x.toFixed(1)}  y ${s.y.toFixed(1)}   from middle: ` +
-            `left/right ${tiltFromCenter(s).leftRight.toFixed(1)}  forward/back ${tiltFromCenter(s).forwardBack.toFixed(1)}   ${seen}`,
+          `P${player}  ${mode.padEnd(16)}  ${rate}   nunchuk  joy ${String(s.jx).padStart(4)}, ${String(s.jy).padStart(4)}  C ${s.bc ? 1 : 0}  Z ${s.bz ? 1 : 0}  shake ${s.shake ? 1 : 0}   ${seen}`,
+          `    tilt x ${s.x.toFixed(1)}  y ${s.y.toFixed(1)}   from middle: ` +
+            `left/right ${tiltFromCenter(s).leftRight.toFixed(1)}  forward/back ${tiltFromCenter(s).forwardBack.toFixed(1)}`,
         );
       } else {
         lines.push(
-          `P${s.player} mpu      x ${s.x.toFixed(1)}  y ${s.y.toFixed(1)}  z ${s.z.toFixed(1)}  shake ${s.shake ? 1 : 0}  btn ${s.btn ? 1 : 0}`,
-          `          center ${s.neutralX.toFixed(1)}, ${s.neutralY.toFixed(1)}, ${s.neutralZ.toFixed(1)}   ${seen}`,
+          `P${player}  ${mode.padEnd(16)}  ${rate}   mpu  x ${s.x.toFixed(1)}  y ${s.y.toFixed(1)}  z ${s.z.toFixed(1)}  shake ${s.shake ? 1 : 0}  btn ${s.btn ? 1 : 0}   ${seen}`,
+          `    center ${s.neutralX.toFixed(1)}, ${s.neutralY.toFixed(1)}, ${s.neutralZ.toFixed(1)}` +
+            (player === MOUSE_PLAYER ? `   cursor ${this.motion[2].cursor.x.toFixed(0)}, ${this.motion[2].cursor.y.toFixed(0)}` : ''),
         );
       }
+    }
+    if (this.lastError) {
+      const ago = Math.round((now - this.lastError.time) / 1000);
+      lines.push('', `last error (${ago} s ago): ${this.lastError.text}`);
     }
     lines.push('', 'T mouse/controller  C center  R reset min/max  Space P1 button  D close');
     this.ui.setDebugText(lines.join('\n'));
