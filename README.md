@@ -64,6 +64,14 @@ De Arduino-sketch staat in `hardware/kaboeko_mpu6050/`.
 - **Toetsen:** `C` = huidige stand wordt het midden (kalibreren), `T` = wisselen
   tussen muis en controller, `D` = debugpaneel, `R` = min/max in het
   debugpaneel resetten, `Spatie` = knop van speler 1.
+- **Testen zonder controller (overal):** speler 1 speelt met het toetsenbord.
+  `ZQSD` (de toetsen op de plaats van WASD) of de pijltjes bewegen de cursor van
+  speler 1, `Spatie`/`Enter` is de knop van speler 1. Het toetsenbord doet zich
+  dan voor als de controller van speler 1, dus elke game werkt zoals met een
+  echte controller. Speler 2 blijft op de muis/trackpad. Zonder controller
+  beweegt `D` speler 1 (het debugpaneel is alleen nuttig met een controller).
+  Zodra een echte controller data stuurt, neemt die het weer over; `T` zet
+  speler 1 terug uit.
 - **Genrescherm:** twee handjes. Speler 1 = controller (+ spatie om te kiezen),
   speler 2 = muis (gewoon klikken).
 - **Fantasiescherm:** de titel *Fantasie* en de twee bewegende props verdwijnen
@@ -83,10 +91,8 @@ De Arduino-sketch staat in `hardware/kaboeko_mpu6050/`.
   kan speler 2 geen spreuk doen ("Wacht! De paraplu is open"). Elke treffer laat haar
   levensbalk zakken. Bij nul verdwijnt de heks in rook, komt het
   boek van geschiedenis tevoorschijn, dat even later vanzelf opengaat.
-  **Testen zonder controller:** speler 1 speelt dan met het toetsenbord:
-  `WASD` (of de pijltjes) beweegt de paraplu, `Spatie`/`Enter` is de knop
-  (paraplu open/dicht, verder naar de volgende stap). Speler 2 blijft op de
-  muis/trackpad. Tijdens het spel opent `D` dan dus niet het debugpaneel.
+  **Testen zonder controller:** speler 1 speelt met `ZQSD`/pijltjes en
+  `Spatie`/`Enter` (zie hierboven).
   Spreuken staan in `src/scenes/fantasySpells.ts`, moeilijkheid bovenaan
   `FantasyScene.ts` (`ATTACK`, `SPELL`, `DAMAGE`).
 - **Overal anders:** één cursor. Met controller volgt die de controller en

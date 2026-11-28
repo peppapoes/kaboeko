@@ -205,22 +205,6 @@ const PLAYER_PROPS = {
   wand: { startX: 1300, startY: 1050, height: 200, badgeX: 70, badgeY: 225 },
 };
 const BADGE = { width: 150, height: 48 };
-/**
- * For testing without a controller: player 1 plays with the keyboard.
- * WASD (or the arrow keys) move the umbrella, Space or Enter is player 1's button.
- * Player 2 keeps the mouse/trackpad.
- */
-const KEYBOARD_SPEED = 900;
-const MOVE_KEYS: Record<string, { x: number; y: number }> = {
-  w: { x: 0, y: -1 },
-  a: { x: -1, y: 0 },
-  s: { x: 0, y: 1 },
-  d: { x: 1, y: 0 },
-  arrowup: { x: 0, y: -1 },
-  arrowleft: { x: -1, y: 0 },
-  arrowdown: { x: 0, y: 1 },
-  arrowright: { x: 1, y: 0 },
-};
 
 /** The witch's attacks. */
 const ATTACK = {
@@ -379,8 +363,6 @@ export class FantasyScene extends Scene {
   /** Cards and sign of the intro. */
   private introObjects: GameObjects.Container[] = [];
   private practice?: Practice;
-  /** The umbrella and wand are the cursors (from the tutorial on). */
-  private playersReady = false;
   /** The players' hands, on the title and intro (while playing, the wand and umbrella are the cursor). */
   private pointers!: PlayerPointers;
   private backButton?: GameObjects.Image;
@@ -398,8 +380,6 @@ export class FantasyScene extends Scene {
   /** Where the umbrella and the tip of the wand are. */
   private umbrellaAt = { x: 0, y: 0 };
   private wandAt = { x: 0, y: 0 };
-  /** Movement keys of player 1 that are held down (testing without a controller). */
-  private heldKeys = new Set<string>();
 
   private witch!: GameObjects.Image;
   private witchHealth = WITCH.health;
@@ -468,7 +448,6 @@ export class FantasyScene extends Scene {
     this.introUmbrella = undefined;
     this.introObjects = [];
     this.practice = undefined;
-    this.playersReady = false;
     this.isUmbrellaOpen = false;
     this.witchHealth = WITCH.health;
     this.poseId = 0;
@@ -477,7 +456,6 @@ export class FantasyScene extends Scene {
     this.lastSpell = undefined;
     this.closedBook = undefined;
     this.bookSparkles = undefined;
-    this.heldKeys.clear();
     this.makeTextures();
 
     // The empty room first; the full room fades in when the game starts (see startGame).
@@ -497,14 +475,9 @@ export class FantasyScene extends Scene {
 
     this.input.on('pointerup', this.pressButton, this);
     inputManager.on('select', this.onPlayer1Button, this);
-    // Capture phase: we see the keys before the input manager (where D = debug panel).
-    window.addEventListener('keydown', this.onTestKey, true);
-    window.addEventListener('keyup', this.onTestKey, true);
     this.events.once('shutdown', () => {
       this.input.off('pointerup', this.pressButton, this);
       inputManager.off('select', this.onPlayer1Button, this);
-      window.removeEventListener('keydown', this.onTestKey, true);
-      window.removeEventListener('keyup', this.onTestKey, true);
       this.removeGameplayInput();
     });
 
@@ -1050,10 +1023,12 @@ export class FantasyScene extends Scene {
     // The hands go: the wand and the umbrella are the cursors now.
     this.pointers.hide();
     this.input.setDefaultCursor('none');
-    this.playersReady = true;
     // Player 1 (controller) moves the umbrella, player 2 (mouse) the wand.
+    // (Without a controller, player 1 plays on the keyboard: ZQSD/arrows + Space, see InputManager.)
     inputManager.on('cursormove', this.moveUmbrella, this);
     this.input.on('pointermove', this.moveWand, this);
+    // On the keyboard, player 1's cursor starts at the umbrella.
+    inputManager.setKeyboardCursor(umbrellaAt);
   }
 
   private removeGameplayInput() {
@@ -1110,47 +1085,6 @@ export class FantasyScene extends Scene {
     const shown = this.isUmbrellaOpen ? this.umbrellaOpen : this.umbrellaClosed;
     const scale = shown.scale;
     this.tweens.add({ targets: shown, scale: { from: scale * 0.8, to: scale }, duration: 220, ease: 'Back.Out' });
-  }
-
-  /**
-   * Testing without a controller: player 1 on the keyboard (WASD/arrows + Space/Enter).
-   * Only while no controller is in use; with a controller the keys work as before.
-   */
-  private onTestKey = (event: KeyboardEvent) => {
-    if (inputManager.getMode() !== 'mouse' || event.metaKey || event.ctrlKey || event.altKey) return;
-    const key = event.key.toLowerCase();
-
-    if (MOVE_KEYS[key]) {
-      // Outside the game itself the keys keep their normal job (D = debug panel).
-      if (event.type === 'keydown' && !this.playersReady) return;
-      event.preventDefault();
-      event.stopImmediatePropagation();
-      if (event.type === 'keydown') this.heldKeys.add(key);
-      else this.heldKeys.delete(key);
-    } else if ((key === ' ' || key === 'enter') && event.type === 'keydown') {
-      event.preventDefault();
-      event.stopImmediatePropagation();
-      if (!event.repeat) this.onPlayer1Button({ player: 1 });
-    }
-  };
-
-  update(_time: number, delta: number) {
-    if (!this.playersReady || this.heldKeys.size === 0 || inputManager.getMode() !== 'mouse') return;
-    // Player 1 on the keyboard: the held keys move the umbrella.
-    let dx = 0;
-    let dy = 0;
-    for (const key of this.heldKeys) {
-      dx += MOVE_KEYS[key].x;
-      dy += MOVE_KEYS[key].y;
-    }
-    dx = PMath.Clamp(dx, -1, 1);
-    dy = PMath.Clamp(dy, -1, 1);
-    if (dx === 0 && dy === 0) return;
-    const step = (KEYBOARD_SPEED * delta) / 1000;
-    this.moveUmbrella({
-      x: PMath.Clamp(this.umbrellaAt.x + dx * step, 0, GAME_WIDTH),
-      y: PMath.Clamp(this.umbrellaAt.y + dy * step, 0, GAME_HEIGHT),
-    });
   }
 
   // ---------------------------------------------------------------------------
@@ -1676,7 +1610,6 @@ export class FantasyScene extends Scene {
       this.spell = undefined;
     }
     this.removeGameplayInput();
-    this.playersReady = false;
 
     // The witch holds her face for a moment...
     this.witch.setTexture(WITCH_POSES.hit);
