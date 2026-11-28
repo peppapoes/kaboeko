@@ -4,15 +4,17 @@ import { inputManager } from '../input/InputManager';
 import { addHandImage, PlayerPointers } from '../playerPointers';
 import { dropIn, popIn, riseIn, sinkOut, slideIn, sway, swing } from '../puppet';
 import { loadSvgParts } from '../svgParts';
-import { addStartButton, preloadStartButton } from '../ui';
 
 /*
  * Minigame "detectieve".
  *
  *  0. Title: "DETECTIEVE" with the letters falling in one by one, then the
  *     net and the magnifying glass come in.
- *  1. Intro: the title shrinks to the top, the tools move to their player's
- *     card, and the cards and the sign come up. A button press starts the game.
+ *  1. Intro: the title goes, the tools move to their player's card, and the
+ *     cards and the sign come up. Then a mini tutorial: the glass and net become
+ *     the cursors; player 1 finds a hidden clue (glass on it + button), player 2
+ *     catches a suspect walking to and fro with the net. When both did it:
+ *     "Hou je klaar!", 3, 2, 1, "Start!" and the game starts.
  *  2. Search (both at the same time):
  *     - Player 1 (magnifying glass) finds the 3 clues in and around the
  *       bookcases: the glass on a clue makes it grow a bit, a click takes it.
@@ -58,8 +60,26 @@ const CARDS = {
 };
 /** The "Help!" sign hangs from the top (its post goes up off the screen). */
 const SIGN = { key: 'dt-sign-help', file: 'sign-help.svg', x: GAME_WIDTH / 2, y: -20, scale: 0.87 };
-/** "Druk op een knop om te starten", at the bottom between the cards. */
-const START_BUTTON = { x: GAME_WIDTH / 2, y: 1140, width: 755 };
+/**
+ * The mini tutorial, below the cards: player 1 finds the hidden clue with the glass,
+ * player 2 catches the suspect (walking between minX and maxX, feet at y) with the net.
+ */
+const PRACTICE = {
+  clue: { key: 'dt-clue-moustache', x: 650, y: 1040, width: 150 },
+  suspect: { key: 'dt-wolf', minX: 1080, maxX: 1360, y: 1210, height: 330, time: 2600 },
+  waitText: { text: 'Probeer het eerst allebei even!', y: 1235 },
+  /** After both are done, this long (ms) before the intro goes and the countdown starts. */
+  doneDelay: 900,
+};
+/** The players' colours (for the check marks): player 1 blue, player 2 red. */
+const PLAYER_COLOR = { p1: 0x2b69b4, p2: 0xd23636 };
+/**
+ * After the tutorial: "Hou je klaar!", then 3, 2, 1 in the middle of the screen,
+ * then "Start!" and the game starts. Times in ms.
+ */
+const COUNTDOWN = { text: 'Hou je klaar!', numbers: ['3', '2', '1'], go: 'Start!', y: 600, readyTime: 1300, numberTime: 850 };
+const FONT = 'Oswald';
+const SIGN_FONT = 'Andika';
 
 /** Draw order (higher = on top). */
 // The net and magnifying glass are in front of the cards.
@@ -234,11 +254,24 @@ type State =
   | 'titleReady'
   | 'busy'
   | 'intro'
-  | 'introReady'
+  | 'tutorial'
   | 'search'
   | 'notebook'
   | 'accuse'
   | 'done';
+
+/** The mini tutorial in the intro. */
+interface Practice {
+  clue: GameObjects.Image;
+  suspect: GameObjects.Image;
+  walk: Tweens.Tween;
+  bounce: Tweens.Tween;
+  waitText: GameObjects.Text;
+  checks: GameObjects.Container[];
+  done: { p1: boolean; p2: boolean };
+  /** Is the glass on the clue? */
+  hover: boolean;
+}
 
 interface ClueState {
   def: (typeof CLUES)[number];
@@ -292,6 +325,7 @@ export class DetectiveScene extends Scene {
   /** Accusation with two players: who chose which suspect, and their hand above it. */
   private accuseChoice: Partial<Record<1 | 2, SuspectState>> = {};
   private choiceHands: Partial<Record<1 | 2, GameObjects.Container>> = {};
+  private practice?: Practice;
 
   constructor() {
     super('DetectiveScene');
@@ -302,7 +336,6 @@ export class DetectiveScene extends Scene {
     this.load.svg('dt-net', PATH + 'net.svg', { scale: RENDER_SCALE });
     this.load.svg('dt-glass', PATH + 'vergrootglas.svg', { scale: RENDER_SCALE });
     this.load.svg(SIGN.key, PATH + SIGN.file, { scale: RENDER_SCALE });
-    preloadStartButton(this);
     Object.values(CARDS).forEach((card) => this.load.svg(card.key, PATH + card.file, { scale: RENDER_SCALE }));
     // Loaded as text: split into one image per letter (see svgParts.ts).
     this.load.text('dt-title', PATH + 'detectieve.svg');
@@ -367,6 +400,7 @@ export class DetectiveScene extends Scene {
     this.hoverClue = undefined;
     this.seenSearchCard = { p1: false, p2: false };
     this.searchCard = {};
+    this.practice = undefined;
 
     this.add.image(0, 0, 'dt-background').setOrigin(0).setDisplaySize(GAME_WIDTH, GAME_HEIGHT).setDepth(DEPTH.background);
 
@@ -392,7 +426,6 @@ export class DetectiveScene extends Scene {
   /** "The button" (mouse click for now, ESP32 button later). */
   private pressButton() {
     if (this.state === 'titleReady') this.showIntro();
-    else if (this.state === 'introReady') this.startGame();
   }
 
   private addBackButton() {
@@ -417,7 +450,12 @@ export class DetectiveScene extends Scene {
   // ---------------------------------------------------------------------------
 
   private async showTitle() {
-    const title = await loadSvgParts(this, this.cache.text.get('dt-title'), 'dt-title', RENDER_SCALE);
+    const [title] = await Promise.all([
+      loadSvgParts(this, this.cache.text.get('dt-title'), 'dt-title', RENDER_SCALE),
+      // The fonts of the tutorial text and the countdown, so they are ready in time.
+      document.fonts.load(`700 36px ${SIGN_FONT}`),
+      document.fonts.load(`700 150px ${FONT}`),
+    ]);
     // The player may have left the scene while the letters were being prepared.
     if (!this.sys.isActive() || this.state !== 'title') return;
 
@@ -483,7 +521,6 @@ export class DetectiveScene extends Scene {
       .setDepth(DEPTH.content);
     dropIn(this, sign, { delay: 300, sway: false });
     this.introObjects.push(sign);
-    this.introObjects.push(addStartButton(this, START_BUTTON.x, START_BUTTON.y, { width: START_BUTTON.width, depth: DEPTH.content, delay: 1000 }));
     for (const [i, card] of [CARDS.p1, CARDS.p2].entries()) {
       const image = this.add
         .image(card.x, BOTTOM_Y, card.key)
@@ -494,7 +531,10 @@ export class DetectiveScene extends Scene {
       this.introObjects.push(image);
     }
 
-    this.time.delayedCall(1400, () => (this.state = 'introReady'));
+    // When the cards are up: the mini tutorial.
+    this.time.delayedCall(1400, () => {
+      if (this.state === 'busy') this.startTutorial();
+    });
   }
 
   /** Glide a tool to a new spot, then start its movement again. */
@@ -550,6 +590,195 @@ export class DetectiveScene extends Scene {
   }
 
   // ---------------------------------------------------------------------------
+  // Mini tutorial
+  // ---------------------------------------------------------------------------
+
+  /**
+   * The glass and net next to the cards become the cursors, and each player tries
+   * their job once: player 1 finds a hidden clue with the glass (and presses the
+   * button), player 2 catches a suspect that walks to and fro with the net.
+   */
+  private startTutorial() {
+    this.state = 'tutorial';
+
+    // The tools of the title take over from the hands, right where they are.
+    const glassAt = { x: this.glass?.x ?? TOOL_SPOTS.intro.glass.x, y: this.glass?.y ?? TOOL_SPOTS.intro.glass.y };
+    for (const tool of [this.glass, this.net]) {
+      if (!tool) continue;
+      this.stopCircle(tool);
+      this.tweens.killTweensOf(tool);
+      tool.destroy();
+    }
+    this.glass = undefined;
+    this.net = undefined;
+    // On the keyboard, player 1's pointer starts at the glass.
+    inputManager.setKeyboardCursor(glassAt);
+    this.addCursorTools();
+    for (const tool of [this.glassTool, this.netTool]) if (tool) popIn(this, tool, { duration: 350 });
+
+    // Player 1: a clue, hidden until the glass comes near (like in the game).
+    const C = PRACTICE.clue;
+    const clue = this.add.image(C.x, C.y, C.key).setDepth(DEPTH.content);
+    clue.setScale(C.width / clue.width);
+    clue.setData('scale', clue.scale).setData('bounds', clue.getBounds()).setAlpha(0);
+
+    // Player 2: a suspect that walks to and fro below the card.
+    const S = PRACTICE.suspect;
+    const suspect = this.add.image(S.minX, S.y, S.key).setOrigin(0.5, 1).setDepth(DEPTH.content);
+    suspect.setScale(S.height / suspect.height);
+    popIn(this, suspect, { delay: 300 });
+    const walk = this.tweens.add({
+      targets: suspect,
+      x: S.maxX,
+      duration: S.time,
+      yoyo: true,
+      repeat: -1,
+      ease: 'Sine.InOut',
+      // Look the way he walks (the drawings look to the right).
+      onYoyo: () => suspect.setFlipX(true),
+      onRepeat: () => suspect.setFlipX(false),
+    });
+    const bounce = this.tweens.add({ targets: suspect, angle: { from: -3, to: 3 }, duration: 260, yoyo: true, repeat: -1, ease: 'Sine.InOut' });
+
+    const waitText = this.add
+      .text(GAME_WIDTH / 2, PRACTICE.waitText.y, PRACTICE.waitText.text, {
+        fontFamily: SIGN_FONT,
+        fontStyle: '700',
+        fontSize: '36px',
+        color: '#FFFFFF',
+        resolution: RENDER_SCALE,
+      })
+      .setOrigin(0.5)
+      .setDepth(DEPTH.content)
+      .setShadow(0, 3, 'rgba(3, 49, 78, 0.6)', 6)
+      .setAlpha(0);
+    this.tweens.add({ targets: waitText, alpha: 1, duration: 400, delay: 500 });
+
+    this.practice = { clue, suspect, walk, bounce, waitText, checks: [], done: { p1: false, p2: false }, hover: false };
+  }
+
+  /** Tutorial, every frame: the clue shows as the glass comes near, and grows when the glass is on it. */
+  private practiceClue(glass: { x: number; y: number }) {
+    const practice = this.practice;
+    if (!practice || practice.done.p1) return;
+    const { full, none } = CLUE_HOVER.reveal;
+    const { clue } = practice;
+    const distance = distanceToRect(glass, clue.getData('bounds') as Geom.Rectangle);
+    clue.setAlpha(PMath.Clamp((none - distance) / (none - full), 0, 1));
+    const hover = distance <= CLUE_HOVER.distance;
+    if (hover === practice.hover) return;
+    practice.hover = hover;
+    const base = clue.getData('scale') as number;
+    this.tweens.killTweensOf(clue);
+    this.tweens.add({ targets: clue, scale: hover ? base * CLUE_HOVER.grow : base, duration: 180, ease: 'Sine.Out' });
+  }
+
+  /**
+   * A click in the tutorial. Player 1's button on the clue finds it; player 2's
+   * net on the suspect catches him. (Without a controller the mouse does both.)
+   */
+  private practiceSelect(isPlayer1: boolean) {
+    const practice = this.practice;
+    if (!practice) return;
+    const controller = inputManager.getMode() === 'tilt';
+
+    if ((isPlayer1 || !controller) && practice.hover && !practice.done.p1) {
+      practice.done.p1 = true;
+      practice.hover = false;
+      const { clue } = practice;
+      this.tweens.killTweensOf(clue);
+      clue.setAlpha(1);
+      this.tweens.add({ targets: clue, scale: (clue.getData('scale') as number) * 1.3, duration: 200, yoyo: true, ease: 'Sine.Out' });
+      this.addCheck(clue.x, clue.y - 90, PLAYER_COLOR.p1);
+      this.checkPracticeDone();
+      return;
+    }
+    if (isPlayer1) return;
+
+    this.throwNet();
+    const net = this.netPoint();
+    const { suspect } = practice;
+    if (practice.done.p2 || !suspect.getBounds().contains(net.x, net.y)) return;
+    practice.done.p2 = true;
+    practice.walk.stop();
+    practice.bounce.stop();
+    // Caught: a little jump, and he stands still.
+    suspect.setAngle(0);
+    this.tweens.add({ targets: suspect, y: suspect.y - 40, duration: 180, yoyo: true, ease: 'Quad.Out' });
+    this.addCheck(suspect.x, suspect.y - PRACTICE.suspect.height - 50, PLAYER_COLOR.p2);
+    this.checkPracticeDone();
+  }
+
+  /** Both tried it: after a moment the intro goes and the countdown starts. */
+  private checkPracticeDone() {
+    const practice = this.practice;
+    if (!practice || !practice.done.p1 || !practice.done.p2) return;
+    this.time.delayedCall(PRACTICE.doneDelay, () => {
+      if (this.state === 'tutorial') this.startGame();
+    });
+  }
+
+  /** A check mark in a white circle, in the player's colour: this player did it. */
+  private addCheck(x: number, y: number, color: number) {
+    const mark = this.add
+      .graphics()
+      .fillStyle(0xffffff, 1)
+      .fillCircle(0, 0, 40)
+      .lineStyle(6, color, 1)
+      .strokeCircle(0, 0, 40)
+      .lineStyle(10, color, 1)
+      .beginPath()
+      .moveTo(-18, 2)
+      .lineTo(-5, 16)
+      .lineTo(20, -14)
+      .strokePath();
+    const check = this.add.container(x, y, [mark]).setDepth(DEPTH.content + 0.5);
+    popIn(this, check);
+    this.practice?.checks.push(check);
+  }
+
+  private removePractice() {
+    const practice = this.practice;
+    this.practice = undefined;
+    if (!practice) return;
+    practice.walk.stop();
+    practice.bounce.stop();
+    for (const object of [practice.clue, practice.suspect, practice.waitText, ...practice.checks]) {
+      this.tweens.killTweensOf(object);
+      this.tweens.add({ targets: object, alpha: 0, scale: object.scale * 0.6, duration: 300, onComplete: () => object.destroy() });
+    }
+  }
+
+  /** "Hou je klaar!", then 3, 2, 1 (big, in the middle), then "Start!", and when that goes: `then`. */
+  private countdown(then: () => void) {
+    const steps = [COUNTDOWN.text, ...COUNTDOWN.numbers, COUNTDOWN.go];
+    let delay = 0;
+    steps.forEach((step, i) => {
+      const isNumber = i > 0 && i <= COUNTDOWN.numbers.length;
+      const time = isNumber ? COUNTDOWN.numberTime : COUNTDOWN.readyTime;
+      if (step === COUNTDOWN.go) this.time.delayedCall(delay + time - 250, then);
+      this.time.delayedCall(delay, () => {
+        const text = this.add
+          .text(GAME_WIDTH / 2, COUNTDOWN.y, step, {
+            fontFamily: FONT,
+            fontStyle: '700',
+            fontSize: isNumber ? '300px' : '150px',
+            color: '#FFFFFF',
+            resolution: RENDER_SCALE,
+          })
+          .setOrigin(0.5)
+          .setDepth(DEPTH.message)
+          .setShadow(0, 6, 'rgba(3, 49, 78, 0.6)', 12)
+          .setAngle([-4, 3, -2, 4, -3][i % 5]);
+        // Pops up, stays a moment, then grows a little and fades away.
+        this.tweens.add({ targets: text, scale: { from: 0.3, to: 1 }, duration: 350, ease: 'Back.Out' });
+        this.tweens.add({ targets: text, alpha: 0, scale: 1.3, delay: time - 250, duration: 250, onComplete: () => text.destroy() });
+      });
+      delay += time;
+    });
+  }
+
+  // ---------------------------------------------------------------------------
   // Start: clear the intro, build the library
   // ---------------------------------------------------------------------------
 
@@ -567,12 +796,16 @@ export class DetectiveScene extends Scene {
     }
     this.letters = [];
     this.introObjects = [];
+    this.removePractice();
 
-    this.time.delayedCall(600, () => this.buildSearch());
+    // Hou je klaar, 3, 2, 1, start: then the library.
+    this.time.delayedCall(700, () => this.countdown(() => this.buildSearch()));
   }
 
   /** The tools follow the players: glass = player 1 (controller), net = player 2 (mouse). */
   private addCursorTools() {
+    // Already there since the tutorial.
+    if (this.glassTool) return;
     this.glassTool = this.add.image(0, 0, 'dt-glass').setOrigin(GLASS_TOOL.originX, GLASS_TOOL.originY).setDepth(DEPTH.cursorTool);
     this.glassTool.setScale(GLASS_TOOL.width / this.glassTool.width);
     this.netTool = this.add.image(0, 0, 'dt-net').setOrigin(NET_TOOL.originX, NET_TOOL.originY).setDepth(DEPTH.cursorTool);
@@ -642,6 +875,7 @@ export class DetectiveScene extends Scene {
     this.netTool.setPosition(net.x, net.y);
 
     if (this.state === 'search') this.searchClues(glass);
+    else if (this.state === 'tutorial') this.practiceClue(glass);
   }
 
   // ---------------------------------------------------------------------------
@@ -886,7 +1120,9 @@ export class DetectiveScene extends Scene {
     const controller = inputManager.getMode() === 'tilt';
     const isPlayer1 = event.player === 1;
 
-    if (this.state === 'search') {
+    if (this.state === 'tutorial') {
+      this.practiceSelect(isPlayer1);
+    } else if (this.state === 'search') {
       if ((isPlayer1 || !controller) && this.hoverClue) {
         this.findClue(this.hoverClue);
         return;
