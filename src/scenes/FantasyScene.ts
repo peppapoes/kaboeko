@@ -497,7 +497,9 @@ export class FantasyScene extends Scene {
 
     this.input.on('pointerup', this.pressButton, this);
     inputManager.on('select', this.onPlayer1Button, this);
-    // Capture phase: we see the keys before the input manager (where D = debug panel).
+    // This game has its own keyboard controls (onTestKey).
+    inputManager.useOwnKeyboard(this);
+    // Capture phase: we see the keys before the input manager.
     window.addEventListener('keydown', this.onTestKey, true);
     window.addEventListener('keyup', this.onTestKey, true);
     this.events.once('shutdown', () => {

@@ -510,6 +510,8 @@ export class AdventureScene extends Scene {
     this.input.on('pointermove', this.onPointerMove, this);
     inputManager.on('select', this.onSelect, this);
     inputManager.on('shake', this.onShake, this);
+    // This game has its own keyboard controls (onTestKey).
+    inputManager.useOwnKeyboard(this);
     window.addEventListener('keydown', this.onTestKey, true);
     window.addEventListener('keyup', this.onTestKey, true);
     this.events.once('shutdown', () => {
