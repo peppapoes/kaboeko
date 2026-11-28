@@ -31,6 +31,13 @@ import { SerialController, type ControllerMessage } from './SerialController';
  * sketch). If both controllers say the same player, the second one to connect
  * becomes the other player, so both sketches can keep PLAYER = 1.
  *
+ * Without a controller, player 1 can use the keyboard: the first ZQSD / arrow
+ * key, Space or Enter makes the keyboard player 1's controller (keys move the
+ * pointer, Space / Enter is the button), and the mouse stays player 2. For the
+ * scenes this is "tilt" mode, so they need nothing extra. T goes back to only
+ * the mouse; a real controller takes over as soon as it sends data. A scene
+ * with its own keyboard controls turns this off with useOwnKeyboard(this).
+ *
  * Use from anywhere:  import { inputManager } from './input/InputManager';
  *   inputManager.getCursor()        -> { x, y } of the main pointer, in game coordinates
  *   inputManager.getMode()          -> 'mouse' | 'tilt'
@@ -41,14 +48,8 @@ import { SerialController, type ControllerMessage } from './SerialController';
  *   inputManager.on('cursormove', ({ player, x, y }) => ...)  player 1's tilt cursor moved
  *   inputManager.on('modechange', (mode) => ...)
  *
- * Testing without a controller: player 1 on the keyboard. ZQSD (the keys at the
- * place of WASD, so ZQSD on a Belgian AZERTY keyboard) or the arrow keys move
- * player 1's cursor, Space or Enter is player 1's button. The keyboard then acts
- * as player 1's controller ("tilt" mode), so every scene works as with a real one.
- * A real controller takes over again as soon as it sends data.
- *
- * Keys: T = switch mouse/controller, C = calibrate, D = debug panel (with a real
- * controller; without one D moves player 1), Space/Enter = player 1's button.
+ * Keys: ZQSD / arrows = move player 1, Space / Enter = player 1's button,
+ * T = switch mouse/controller, C = calibrate, Shift+D = debug panel.
  */
 
 export type InputMode = 'mouse' | 'tilt';
@@ -91,6 +92,24 @@ const TILT_PLAYER = 1;
 /** In split mode, the mouse belongs to this player (or player 2's controller, see above). */
 const MOUSE_PLAYER = 2;
 
+/**
+ * Keys that move player 1. These are key positions (event.code): 'KeyW' is the key
+ * marked Z on AZERTY (and W on QWERTY), so ZQSD and WASD both work.
+ */
+const MOVE_KEYS: Record<string, Point> = {
+  KeyW: { x: 0, y: -1 },
+  KeyA: { x: -1, y: 0 },
+  KeyS: { x: 0, y: 1 },
+  KeyD: { x: 1, y: 0 },
+  ArrowUp: { x: 0, y: -1 },
+  ArrowLeft: { x: -1, y: 0 },
+  ArrowDown: { x: 0, y: 1 },
+  ArrowRight: { x: 1, y: 0 },
+};
+const BUTTON_KEYS = ['Space', 'Enter', 'NumpadEnter'];
+/** How fast the keys move player 1's pointer (game pixels per second). */
+const KEYBOARD_SPEED = 900;
+
 /** The players that can have a controller. */
 type ControllerPlayer = 1 | 2;
 const CONTROLLER_PLAYERS: readonly ControllerPlayer[] = [1, 2];
@@ -122,20 +141,6 @@ interface StillSample {
   yaw: number;
 }
 
-/** Player 1 on the keyboard: the keys (by place: ZQSD on AZERTY = WASD on QWERTY) and the arrows. */
-const KEYBOARD_MOVES: Record<string, Point> = {
-  KeyW: { x: 0, y: -1 },
-  KeyA: { x: -1, y: 0 },
-  KeyS: { x: 0, y: 1 },
-  KeyD: { x: 1, y: 0 },
-  ArrowUp: { x: 0, y: -1 },
-  ArrowLeft: { x: -1, y: 0 },
-  ArrowDown: { x: 0, y: 1 },
-  ArrowRight: { x: 1, y: 0 },
-};
-/** How fast the keyboard moves player 1's cursor (game pixels per second). */
-const KEYBOARD_SPEED = 900;
-
 const DEBUG_REFRESH_MS = 250;
 /** Point mode: how fast (seconds) the jitter filter settles on the real angle when held still. */
 const JITTER_SETTLE_TIME = 0.4;
@@ -158,6 +163,11 @@ class InputManager extends Events.EventEmitter {
    * MOUSE_PLAYER = the mouse, even when a controller is connected; undefined = the default.
    */
   private pointerOwner?: number;
+  /** Is the keyboard player 1's controller right now? (The mode is then 'tilt'.) */
+  private keyboard = false;
+  private readonly heldKeys = new Set<string>();
+  /** A scene that handles the keyboard itself, while it is running. */
+  private ownKeyboardScene?: Scene;
 
   /** Where the mouse pointer is (player 2): the real mouse, or player 2's controller cursor. */
   private mouse: Point = { x: GAME_WIDTH / 2, y: GAME_HEIGHT / 2 };
@@ -165,10 +175,6 @@ class InputManager extends Events.EventEmitter {
   private readonly motion: Record<ControllerPlayer, Motion> = { 1: newMotion(), 2: newMotion() };
   /** Was player 2's controller in use last frame? (To notice when it starts or stops.) */
   private player2WasActive = false;
-  /** Player 1 plays on the keyboard (no controller): see the top of this file. */
-  private keyboardPlayer1 = false;
-  /** The movement keys held down now (KeyboardEvent.code). */
-  private readonly heldMoves = new Set<string>();
 
   /** Player 1's tilt cursor. */
   private get cursor(): Point {
@@ -216,8 +222,8 @@ class InputManager extends Events.EventEmitter {
       }
       window.addEventListener('keydown', this.onKey);
       window.addEventListener('keyup', this.onKeyUp);
-      // Keys let go while the window was not focused: no keyup comes.
-      window.addEventListener('blur', () => this.heldMoves.clear());
+      // Keys released while the window is not focused send no keyup.
+      window.addEventListener('blur', () => this.heldKeys.clear());
       game.events.on('prestep', () => this.update());
 
       if (navigator.serial) {
@@ -267,6 +273,28 @@ class InputManager extends Events.EventEmitter {
     });
   }
 
+  /**
+   * This scene has its own keyboard controls: the keyboard stops being player 1's
+   * controller until the scene shuts down.
+   */
+  useOwnKeyboard(scene: Scene) {
+    this.ownKeyboardScene = scene;
+    this.stopKeyboard();
+    scene.events.once('shutdown', () => {
+      if (this.ownKeyboardScene === scene) this.ownKeyboardScene = undefined;
+    });
+  }
+
+  /**
+   * Put player 1's cursor here for the keyboard (e.g. where the scene's player 1 tool
+   * starts), so the first key press doesn't make it jump. With a real controller it does nothing.
+   */
+  setKeyboardCursor(point: Point) {
+    if (this.isFresh(this.players.get(TILT_PLAYER))) return;
+    this.cursor = this.clamp(point);
+    if (this.keyboard) this.emit('cursormove', { player: TILT_PLAYER, ...this.cursor });
+  }
+
   /** Make the current position of every connected controller the center / neutral position (key C). */
   calibrate() {
     let count = 0;
@@ -307,9 +335,10 @@ class InputManager extends Events.EventEmitter {
 
   /** Switch between mouse and controller by hand (key T). */
   toggleMode() {
-    if (this.mode === 'tilt') {
+    if (this.keyboard) {
+      this.stopKeyboard();
+    } else if (this.mode === 'tilt') {
       this.preferMouse = true;
-      this.keyboardPlayer1 = false;
       this.setMode('mouse');
     } else if (this.isFresh(this.players.get(TILT_PLAYER))) {
       this.preferMouse = false;
@@ -514,73 +543,45 @@ class InputManager extends Events.EventEmitter {
   private onKey = (event: KeyboardEvent) => {
     // Leave browser shortcuts (Cmd+C, Ctrl+D, ...) alone.
     if (event.metaKey || event.ctrlKey || event.altKey) return;
-
-    // No controller for player 1: the keyboard is player 1 (ZQSD/arrows move, Space/Enter = button).
-    const realPlayer1 = this.isFresh(this.players.get(TILT_PLAYER));
-    if (!realPlayer1 && KEYBOARD_MOVES[event.code]) {
-      event.preventDefault(); // the arrows don't scroll the page
-      this.heldMoves.add(event.code);
-      this.startKeyboardPlayer1();
-      return;
-    }
-    if (event.repeat) return;
-
     const key = event.key.toLowerCase();
-    if (!realPlayer1 && (key === ' ' || key === 'enter')) {
-      event.preventDefault();
-      this.startKeyboardPlayer1();
-      this.pressPlayerButton(TILT_PLAYER);
-      return;
-    }
-    if (key === 't') this.toggleMode();
-    else if (key === 'c') this.calibrate();
-    else if (key === 'r') this.resetRange();
-    else if (key === 'd') {
+
+    if (event.shiftKey && key === 'd') {
+      if (event.repeat) return;
       this.ui?.toggleDebug();
       this.lastDebug = 0;
-    } else if (key === ' ') {
+    } else if (MOVE_KEYS[event.code]) {
+      event.preventDefault(); // arrows: don't scroll the page
+      if (this.keyboard || this.startKeyboard()) this.heldKeys.add(event.code);
+    } else if (BUTTON_KEYS.includes(event.code)) {
       event.preventDefault(); // don't scroll the page
+      if (event.repeat) return;
+      if (!this.keyboard) this.startKeyboard();
       this.pressPlayerButton(TILT_PLAYER);
-    }
+    } else if (event.repeat) return;
+    else if (key === 't') this.toggleMode();
+    else if (key === 'c') this.calibrate();
+    else if (key === 'r') this.resetRange();
   };
 
   private onKeyUp = (event: KeyboardEvent) => {
-    this.heldMoves.delete(event.code);
+    this.heldKeys.delete(event.code);
   };
 
-  /** Player 1 starts playing on the keyboard: it acts as player 1's controller. */
-  private startKeyboardPlayer1() {
-    if (!this.keyboardPlayer1) {
-      this.keyboardPlayer1 = true;
-      this.ui?.flash('player 1: keyboard (ZQSD)');
-    }
-    this.preferMouse = false;
+  /** Make the keyboard player 1's controller, if nothing else is. Returns true if it now is. */
+  private startKeyboard(): boolean {
+    // Not while a controller is in use, or in a scene with its own keyboard controls.
+    if (this.ownKeyboardScene || this.isFresh(this.players.get(TILT_PLAYER))) return false;
+    this.keyboard = true;
     this.setMode('tilt');
+    this.ui?.setControllerType('keyboard', TILT_PLAYER);
+    return true;
   }
 
-  /**
-   * Put player 1's cursor here when player 1 plays on the keyboard (e.g. where the
-   * scene's player 1 tool starts). With a real controller it does nothing.
-   */
-  setKeyboardCursor(point: Point) {
-    if (this.isFresh(this.players.get(TILT_PLAYER))) return;
-    this.cursor = this.clamp(point);
-    if (this.mode === 'tilt') this.emit('cursormove', { player: TILT_PLAYER, ...this.cursor });
-  }
-
-  /** Player 1 on the keyboard: the held keys move the cursor. */
-  private moveKeyboardCursor(dt: number) {
-    let dx = 0;
-    let dy = 0;
-    for (const code of this.heldMoves) {
-      dx += KEYBOARD_MOVES[code].x;
-      dy += KEYBOARD_MOVES[code].y;
-    }
-    dx = Math.max(-1, Math.min(1, dx));
-    dy = Math.max(-1, Math.min(1, dy));
-    if ((dx === 0 && dy === 0) || dt <= 0) return;
-    this.cursor = this.clamp({ x: this.cursor.x + dx * KEYBOARD_SPEED * dt, y: this.cursor.y + dy * KEYBOARD_SPEED * dt });
-    this.cursorMoved();
+  private stopKeyboard() {
+    if (!this.keyboard) return;
+    this.keyboard = false;
+    this.heldKeys.clear();
+    this.setMode('mouse');
   }
 
   // ---------------------------------------------------------------------------
@@ -702,6 +703,13 @@ class InputManager extends Events.EventEmitter {
       };
       this.players.set(p, state);
     }
+    // A real controller for player 1 takes over from the keyboard.
+    if (p === TILT_PLAYER && this.keyboard) {
+      this.keyboard = false;
+      this.heldKeys.clear();
+      this.resetMotion(p);
+      this.ui?.setControllerType(type, p);
+    }
     if (state.type !== type) {
       state.type = type;
       this.resetMotion(p);
@@ -752,7 +760,7 @@ class InputManager extends Events.EventEmitter {
 
   /** Is this player's controller in use right now? */
   private controllerInUse(player: ControllerPlayer): boolean {
-    return player === TILT_PLAYER ? this.mode === 'tilt' : this.player2Active();
+    return player === TILT_PLAYER ? this.mode === 'tilt' && !this.keyboard : this.player2Active();
   }
 
   // ---------------------------------------------------------------------------
@@ -873,13 +881,10 @@ class InputManager extends Events.EventEmitter {
     const stalled = frame > STALL_MS;
     const dt = Math.min(frame, 100) / 1000;
 
-    const realPlayer1 = this.isFresh(this.players.get(TILT_PLAYER));
-    if (realPlayer1) this.keyboardPlayer1 = false;
-    if (this.mode === 'tilt' && !stalled && !realPlayer1 && !this.keyboardPlayer1) this.setMode('mouse');
-    if (this.mode === 'tilt') {
-      if (realPlayer1) this.moveCursor(dt);
-      else this.moveKeyboardCursor(dt);
+    if (this.mode === 'tilt' && !this.keyboard && !stalled && !this.isFresh(this.players.get(TILT_PLAYER))) {
+      this.setMode('mouse');
     }
+    if (this.mode === 'tilt') this.moveCursor(dt);
 
     // Player 2's controller: starts or stops (not while the page was busy), and moves the mouse pointer.
     const player2 = this.player2Active() || (stalled && this.player2WasActive);
@@ -904,22 +909,31 @@ class InputManager extends Events.EventEmitter {
   /** Move the tilt cursor (player 1). */
   private moveCursor(dt: number) {
     const state = this.players.get(TILT_PLAYER);
-    if (!state || dt <= 0) return;
+    if (dt <= 0 || (!this.keyboard && !state)) return;
 
-    const next = this.clamp(this.targetFor(state, this.motion[1], dt));
+    const next = this.clamp(this.keyboard ? this.keyboardTarget(dt) : this.targetFor(state!, this.motion[1], dt));
     if (Math.abs(next.x - this.cursor.x) < 0.01 && Math.abs(next.y - this.cursor.y) < 0.01) return;
     this.cursor = next;
-    this.cursorMoved();
-  }
 
-  /** Player 1's cursor moved (controller or keyboard): hover, the pointer, and 'cursormove'. */
-  private cursorMoved() {
     if (this.splitScene) {
       this.setSplitHover(this.hitTest(this.splitScene, this.cursor));
     } else if (!this.mouseOwnsPointer()) {
       this.sendMouseEvent('mousemove');
     }
     this.emit('cursormove', { player: TILT_PLAYER, ...this.cursor });
+  }
+
+  /** Keyboard: the held keys move the cursor at a fixed speed. */
+  private keyboardTarget(dt: number): Point {
+    let dx = 0;
+    let dy = 0;
+    for (const code of this.heldKeys) {
+      dx += MOVE_KEYS[code].x;
+      dy += MOVE_KEYS[code].y;
+    }
+    const step = KEYBOARD_SPEED * dt;
+    // Two keys for the same direction (e.g. Z and arrow up) don't go twice as fast.
+    return { x: this.cursor.x + Math.sign(dx) * step, y: this.cursor.y + Math.sign(dy) * step };
   }
 
   /**
@@ -1164,7 +1178,7 @@ class InputManager extends Events.EventEmitter {
       const ago = Math.round((now - this.lastError.time) / 1000);
       lines.push('', `last error (${ago} s ago): ${this.lastError.text}`);
     }
-    lines.push('', 'T mouse/controller  C center  R reset min/max  Space P1 button  D close');
+    lines.push('', 'T mouse/controller  C center  R reset min/max  Space P1 button  Shift+D close');
     this.ui.setDebugText(lines.join('\n'));
   }
 }

@@ -184,7 +184,7 @@ const TEAM_MARK = { width: 70, dx: 40 };
 /** The waiting balloons at the bottom edge: thrown from here, and a new one comes up. */
 const LAUNCH = { 1: { x: 700, y: 1250 }, 2: { x: 1213, y: 1250 } } as const;
 const LAUNCH_WIDTH = 190;
-const AIM_WIDTH = 80;
+const AIM_WIDTH = 110;
 /** The cannon (bottom left); muzzle = where things come out, as a fraction of the image. */
 const CANNON = { x: 205, y: 1090, width: 650, muzzle: { x: 0.84, y: 0.19 } };
 /** Shot from the cannon: a curve from the muzzle, bent towards `control`, to `end` (off the screen on the right). */

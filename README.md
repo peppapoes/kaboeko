@@ -62,16 +62,16 @@ De Arduino-sketch staat in `hardware/kaboeko_mpu6050/`.
   meteen mee. Zolang die controller verbonden is, beweegt de echte muis
   speler 2 niet; een muisklik telt dan op de plek van de controller van speler 2.
 - **Toetsen:** `C` = huidige stand wordt het midden (kalibreren), `T` = wisselen
-  tussen muis en controller, `D` = debugpaneel, `R` = min/max in het
+  tussen muis en controller, `Shift+D` = debugpaneel, `R` = min/max in het
   debugpaneel resetten, `Spatie` = knop van speler 1.
-- **Testen zonder controller (overal):** speler 1 speelt met het toetsenbord.
-  `ZQSD` (de toetsen op de plaats van WASD) of de pijltjes bewegen de cursor van
-  speler 1, `Spatie`/`Enter` is de knop van speler 1. Het toetsenbord doet zich
-  dan voor als de controller van speler 1, dus elke game werkt zoals met een
-  echte controller. Speler 2 blijft op de muis/trackpad. Zonder controller
-  beweegt `D` speler 1 (het debugpaneel is alleen nuttig met een controller).
-  Zodra een echte controller data stuurt, neemt die het weer over; `T` zet
-  speler 1 terug uit.
+- **Zonder controller (toetsenbord):** speler 1 kan met het toetsenbord spelen,
+  speler 2 blijft op de muis. `ZQSD` / `WASD` of de pijltjes bewegen speler 1,
+  `Spatie` / `Enter` is de knop. In het menu, komedie, detective en
+  geschiedenis doet de eerste van die toetsen het toetsenbord de controller van
+  speler 1 worden: alles werkt dan zoals met een controller (twee spelers).
+  Fantasie gebruikt dit ook. `T` gaat terug naar alleen de muis. Een echte
+  controller neemt het over zodra die data stuurt. Avontuur heeft zijn eigen
+  toetsenbordbesturing.
 - **Genrescherm:** twee handjes. Speler 1 = controller (+ spatie om te kiezen),
   speler 2 = muis (gewoon klikken).
 - **Fantasiescherm:** de titel *Fantasie* en de twee bewegende props verdwijnen
