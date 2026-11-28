@@ -1,6 +1,6 @@
 /*
  * Small HTML overlay for the controller: connect button, mode label,
- * debug panel (key D) and an arrow cursor. Kept outside Phaser so it works
+ * debug panel (Shift+D) and an arrow cursor. Kept outside Phaser so it works
  * the same in every scene.
  *
  * The players' hands are drawn by the scenes themselves (src/playerPointers.ts);
@@ -194,9 +194,10 @@ export class ControllerUI {
     if (visible) element.style.transform = `translate(${left}px, ${top}px)`;
   }
 
-  /** Show which controller a player uses ('mpu' or 'nunchuk'); undefined = player 2 has none (any more). */
-  setControllerType(type: 'mpu' | 'nunchuk' | undefined, player: number = 1) {
-    const name = type === 'nunchuk' ? 'Nunchuk' : type === 'mpu' ? 'MPU-6050' : undefined;
+  /** Show which controller a player uses ('mpu', 'nunchuk' or the keyboard); undefined = player 2 has none (any more). */
+  setControllerType(type: 'mpu' | 'nunchuk' | 'keyboard' | undefined, player: number = 1) {
+    const names = { mpu: 'MPU-6050', nunchuk: 'Nunchuk', keyboard: 'keyboard' };
+    const name = type && names[type];
     if (player === 2) this.player2Name = name;
     else if (name) this.controllerName = name;
     this.showLabel();
@@ -205,9 +206,10 @@ export class ControllerUI {
   private showLabel(extra?: string) {
     const name = this.controllerName;
     const p2 = this.player2Name ? `🎮 P2 ${this.player2Name}` : '🖱 P2 mouse';
-    let text = this.mode === 'tilt' ? `🎮 ${name}` : '🖱 mouse';
+    const icon = name === 'keyboard' ? '⌨️' : '🎮';
+    let text = this.mode === 'tilt' ? `${icon} ${name}` : '🖱 mouse';
     if (this.split || this.player2Name) {
-      text = this.mode === 'tilt' ? `🎮 P1 ${name} · ${p2}` : this.player2Name ? `P1 no controller · ${p2}` : '🖱 P2 mouse (no controller)';
+      text = this.mode === 'tilt' ? `${icon} P1 ${name} · ${p2}` : this.player2Name ? `P1 no controller · ${p2}` : '🖱 P2 mouse (no controller)';
     }
     this.label.textContent = extra ? `${text} · ${extra}` : text;
   }

@@ -62,8 +62,15 @@ De Arduino-sketch staat in `hardware/kaboeko_mpu6050/`.
   meteen mee. Zolang die controller verbonden is, beweegt de echte muis
   speler 2 niet; een muisklik telt dan op de plek van de controller van speler 2.
 - **Toetsen:** `C` = huidige stand wordt het midden (kalibreren), `T` = wisselen
-  tussen muis en controller, `D` = debugpaneel, `R` = min/max in het
+  tussen muis en controller, `Shift+D` = debugpaneel, `R` = min/max in het
   debugpaneel resetten, `Spatie` = knop van speler 1.
+- **Zonder controller (toetsenbord):** speler 1 kan met het toetsenbord spelen,
+  speler 2 blijft op de muis. `ZQSD` / `WASD` of de pijltjes bewegen speler 1,
+  `Spatie` / `Enter` is de knop. In het menu, komedie, detective en
+  geschiedenis doet de eerste van die toetsen het toetsenbord de controller van
+  speler 1 worden: alles werkt dan zoals met een controller (twee spelers).
+  `T` gaat terug naar alleen de muis. Een echte controller neemt het over zodra
+  die data stuurt. Avontuur en fantasie hebben hun eigen toetsenbordbesturing.
 - **Genrescherm:** twee handjes. Speler 1 = controller (+ spatie om te kiezen),
   speler 2 = muis (gewoon klikken).
 - **Fantasiescherm:** de titel *Fantasie* en de twee bewegende props verdwijnen
@@ -86,7 +93,7 @@ De Arduino-sketch staat in `hardware/kaboeko_mpu6050/`.
   **Testen zonder controller:** speler 1 speelt dan met het toetsenbord:
   `WASD` (of de pijltjes) beweegt de paraplu, `Spatie`/`Enter` is de knop
   (paraplu open/dicht, verder naar de volgende stap). Speler 2 blijft op de
-  muis/trackpad. Tijdens het spel opent `D` dan dus niet het debugpaneel.
+  muis/trackpad.
   Spreuken staan in `src/scenes/fantasySpells.ts`, moeilijkheid bovenaan
   `FantasyScene.ts` (`ATTACK`, `SPELL`, `DAMAGE`).
 - **Overal anders:** één cursor. Met controller volgt die de controller en
