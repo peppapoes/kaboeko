@@ -69,8 +69,9 @@ De Arduino-sketch staat in `hardware/kaboeko_mpu6050/`.
   `Spatie` / `Enter` is de knop. In het menu, komedie, detective en
   geschiedenis doet de eerste van die toetsen het toetsenbord de controller van
   speler 1 worden: alles werkt dan zoals met een controller (twee spelers).
-  `T` gaat terug naar alleen de muis. Een echte controller neemt het over zodra
-  die data stuurt. Avontuur en fantasie hebben hun eigen toetsenbordbesturing.
+  Fantasie gebruikt dit ook. `T` gaat terug naar alleen de muis. Een echte
+  controller neemt het over zodra die data stuurt. Avontuur heeft zijn eigen
+  toetsenbordbesturing.
 - **Genrescherm:** twee handjes. Speler 1 = controller (+ spatie om te kiezen),
   speler 2 = muis (gewoon klikken).
 - **Fantasiescherm:** de titel *Fantasie* en de twee bewegende props verdwijnen
@@ -90,10 +91,8 @@ De Arduino-sketch staat in `hardware/kaboeko_mpu6050/`.
   kan speler 2 geen spreuk doen ("Wacht! De paraplu is open"). Elke treffer laat haar
   levensbalk zakken. Bij nul verdwijnt de heks in rook, komt het
   boek van geschiedenis tevoorschijn, dat even later vanzelf opengaat.
-  **Testen zonder controller:** speler 1 speelt dan met het toetsenbord:
-  `WASD` (of de pijltjes) beweegt de paraplu, `Spatie`/`Enter` is de knop
-  (paraplu open/dicht, verder naar de volgende stap). Speler 2 blijft op de
-  muis/trackpad.
+  **Testen zonder controller:** speler 1 speelt met `ZQSD`/pijltjes en
+  `Spatie`/`Enter` (zie hierboven).
   Spreuken staan in `src/scenes/fantasySpells.ts`, moeilijkheid bovenaan
   `FantasyScene.ts` (`ATTACK`, `SPELL`, `DAMAGE`).
 - **Overal anders:** één cursor. Met controller volgt die de controller en

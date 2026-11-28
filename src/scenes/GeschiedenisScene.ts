@@ -1,10 +1,9 @@
 import { GameObjects, Input, Math as PMath, Scene, type Types } from 'phaser';
 import { GAME_HEIGHT, GAME_WIDTH, RENDER_SCALE, setupCamera } from '../config';
-import { dropIn, hop, popIn, riseIn, setRestAngle, sinkOut, slideIn, slideOut, swing } from '../puppet';
+import { dropIn, hop, popIn, riseIn, setRestAngle, sinkOut, slideIn, swing } from '../puppet';
 import { inputManager } from '../input/InputManager';
 import { PlayerPointers } from '../playerPointers';
 import { loadSvgParts } from '../svgParts';
-import { addStartButton, preloadStartButton } from '../ui';
 
 /*
  * Minigame "geschiedenis".
@@ -12,7 +11,10 @@ import { addStartButton, preloadStartButton } from '../ui';
  * Flow:
  *  0. Title: "GESCHIEDENIS" with the letters falling in one by one. Goes on
  *     with a button press, or by itself after a few seconds.
- *  1. Intro: explanation sign and cards. A button press starts the game.
+ *  1. Intro: explanation sign and cards. Then a mini tutorial: the trowel and
+ *     brush become the cursors; player 1 digs away a sand spot, player 2 brushes
+ *     the dust off a find. (With only the mouse: first dig, then brush.) When both
+ *     are done: "Hou je klaar!", 3, 2, 1, "Start!" and the game starts.
  *  2. Player 1 digs with the trowel until something comes up. Only one thing
  *     is in the sand at a time; the joke finds come in between the real ones.
  *     - Joke finds (sock, poop) hop and disappear.
@@ -98,8 +100,26 @@ const CARDS = {
 };
 /** The intro sign hangs from the top (its post goes up off the screen). */
 const INTRO_SIGN = { key: 'gs-sign-archeoloog', file: 'sign-archeoloog.svg', x: GAME_WIDTH / 2, y: -20, scale: 0.87 };
-/** "Druk op een knop om te starten", at the bottom between the cards. */
-const START_BUTTON = { x: GAME_WIDTH / 2, y: 1140, width: 755 };
+/**
+ * The mini tutorial, below the cards: player 1 digs away the sand spot, player 2
+ * brushes the dust off the find. effort = how far (px) the tool has to move over it.
+ */
+const PRACTICE = {
+  sand: { x: 640, y: 1040, width: 300, radius: 160, effort: 900 },
+  find: { key: 'gs-helmet', x: 1250, y: 1010, size: 300, dust: 3, dustSize: 110, radius: 70, effort: 450 },
+  waitText: { text: 'Probeer het eerst allebei even!', textOne: 'Probeer het eerst even!', y: 1215 },
+  /** After both are done, this long (ms) before the intro goes and the countdown starts. */
+  doneDelay: 900,
+};
+/** The players' colours (for the check marks): player 1 blue, player 2 red. */
+const PLAYER_COLOR = { p1: 0x2b69b4, p2: 0xd23636 };
+/**
+ * After the tutorial: "Hou je klaar!", then 3, 2, 1 in the middle of the screen,
+ * then "Start!" and the game starts. Times in ms.
+ */
+const COUNTDOWN = { text: 'Hou je klaar!', numbers: ['3', '2', '1'], go: 'Start!', y: 600, readyTime: 1300, numberTime: 850 };
+const FONT = 'Oswald';
+const SIGN_FONT = 'Andika';
 /** How far (degrees) the cards lean towards the outside of the screen. */
 const CARD_LEAN = 5;
 /** Cards and the intro sign stand with the end of their stick well below the screen. */
@@ -182,7 +202,22 @@ interface Sign {
   filled: boolean;
 }
 
-type State = 'title' | 'titleReady' | 'intro' | 'introReady' | 'busy' | 'dig' | 'pickUp' | 'clean' | 'place' | 'done';
+type State = 'title' | 'titleReady' | 'intro' | 'tutorial' | 'busy' | 'dig' | 'pickUp' | 'clean' | 'place' | 'done';
+
+/** The mini tutorial in the intro. */
+interface Practice {
+  /** Player 1: the sand spot (a few sand blobs together) and how much is dug away. */
+  sand: GameObjects.Container;
+  dug: number;
+  /** Player 2: the find with its dust spots. */
+  find: GameObjects.Container;
+  dust: { image: GameObjects.Image; dirt: number }[];
+  waitText: GameObjects.Text;
+  checks: GameObjects.Container[];
+  done: { p1: boolean; p2: boolean };
+  /** Where each tool was last frame (to know how far it moved). */
+  last: { trowel?: PMath.Vector2; brush?: PMath.Vector2 };
+}
 
 /** Scale that makes an image fit inside maxWidth x maxHeight. */
 function fitScale(image: GameObjects.Image, maxWidth: number, maxHeight: number): number {
@@ -212,7 +247,12 @@ export class GeschiedenisScene extends Scene {
   /** Brush and trowel shown on the title and intro screens. */
   private introBrush?: GameObjects.Image;
   private introTrowel?: GameObjects.Image;
-  private introPress?: GameObjects.Image;
+  private practice?: Practice;
+  /**
+   * From the tutorial until the countdown is over: two players at the same time,
+   * the trowel on player 1's pointer and the brush on the mouse (see updateSplitTools).
+   */
+  private splitTools = false;
   /** The players' hands, on the title, intro and end screens (while playing, the tools are the cursor). */
   private pointers!: PlayerPointers;
   private card?: GameObjects.Image;
@@ -253,7 +293,6 @@ export class GeschiedenisScene extends Scene {
     this.load.svg('gs-background', PATH + 'background.svg', { width: 3840, height: 2560 });
     this.load.svg('gs-sandbox', PATH + 'sandbox.svg', { width: 3840, height: 2110 });
     this.load.svg(INTRO_SIGN.key, PATH + INTRO_SIGN.file, { scale: RENDER_SCALE });
-    preloadStartButton(this);
     Object.values(CARDS).forEach((card) => this.load.svg(card.key, PATH + card.file, { scale: RENDER_SCALE }));
   }
 
@@ -278,7 +317,8 @@ export class GeschiedenisScene extends Scene {
     this.introObjects = [];
     this.introBrush = undefined;
     this.introTrowel = undefined;
-    this.introPress = undefined;
+    this.practice = undefined;
+    this.splitTools = false;
     this.quote = undefined;
     this.sparkles = [];
     this.card = undefined;
@@ -344,6 +384,8 @@ export class GeschiedenisScene extends Scene {
     this.lastPointer.set(x, y);
     if (moved >= IDLE_MOVE_THRESHOLD) this.lastActivity = this.time.now;
 
+    // Tutorial: each tool has its own player (see updateSplitTools).
+    if (this.splitTools) return;
     this.trowel.setPosition(x, y);
     this.brush.setPosition(x, y);
 
@@ -365,7 +407,6 @@ export class GeschiedenisScene extends Scene {
     this.hideCard();
 
     if (this.state === 'titleReady') this.leaveTitle();
-    else if (this.state === 'introReady') this.startGame();
     else if (this.state === 'pickUp') this.pickUp();
     else if (this.state === 'place') this.placeOnSign();
   }
@@ -375,7 +416,12 @@ export class GeschiedenisScene extends Scene {
   // ---------------------------------------------------------------------------
 
   private async showTitle() {
-    const title = await loadSvgParts(this, this.cache.text.get('gs-title'), 'gs-title', RENDER_SCALE);
+    const [title] = await Promise.all([
+      loadSvgParts(this, this.cache.text.get('gs-title'), 'gs-title', RENDER_SCALE),
+      // The fonts of the tutorial text and the countdown, so they are ready in time.
+      document.fonts.load(`700 36px ${SIGN_FONT}`),
+      document.fonts.load(`700 150px ${FONT}`),
+    ]);
     // The player may have left the scene while the letters were being prepared.
     if (!this.sys.isActive() || this.state !== 'title') return;
 
@@ -488,40 +534,256 @@ export class GeschiedenisScene extends Scene {
     riseIn(this, cardP2, { delay: 400, gentle: true });
     riseIn(this, cardP1, { delay: 550, gentle: true });
 
-    // "Druk op een knop om te starten" at the bottom.
-    this.introPress = addStartButton(this, START_BUTTON.x, START_BUTTON.y, { width: START_BUTTON.width, depth: DEPTH.card, delay: 900 });
+    // The brush and trowel are already here (they came along from the title), in front of the cards.
+    this.introBrush?.setDepth(DEPTH.card + 1);
+    this.introTrowel?.setDepth(DEPTH.card + 1);
 
-    // The brush and trowel are already here: they came along from the title.
-    const brush = this.introBrush ?? this.add.image(0, 0, 'gs-brush');
-    const trowel = this.introTrowel ?? this.add.image(0, 0, 'gs-trowel');
-    // In front of the cards.
-    brush.setDepth(DEPTH.card + 1);
-    trowel.setDepth(DEPTH.card + 1);
-
-    this.introObjects = [sign, cardP2, cardP1, brush, trowel];
-    this.time.delayedCall(1400, () => (this.state = 'introReady'));
+    this.introObjects = [sign, cardP2, cardP1];
+    // When the cards are up: the mini tutorial.
+    this.time.delayedCall(1400, () => {
+      if (this.state === 'intro') this.startTutorial();
+    });
   }
 
+  // ---------------------------------------------------------------------------
+  // Mini tutorial
+  // ---------------------------------------------------------------------------
+
+  /**
+   * The trowel and brush next to the cards become the cursors, and each player
+   * tries their job once: player 1 digs away a sand spot, player 2 brushes the dust off a find.
+   */
+  private startTutorial() {
+    this.state = 'tutorial';
+
+    // The tools of the title take over from the hands, right where they are.
+    const trowelAt = { x: this.introTrowel?.x ?? TOOL_SPOTS.intro.trowel.x, y: this.introTrowel?.y ?? TOOL_SPOTS.intro.trowel.y };
+    const brushAt = { x: this.introBrush?.x ?? TOOL_SPOTS.intro.brush.x, y: this.introBrush?.y ?? TOOL_SPOTS.intro.brush.y };
+    for (const tool of [this.introTrowel, this.introBrush]) {
+      if (!tool) continue;
+      this.tweens.killTweensOf(tool);
+      tool.destroy();
+    }
+    this.introTrowel = undefined;
+    this.introBrush = undefined;
+    this.pointers.hide();
+    this.input.setDefaultCursor('none');
+    this.trowel.setPosition(trowelAt.x, trowelAt.y);
+    this.brush.setPosition(brushAt.x, brushAt.y);
+    this.lastPointer.set(brushAt.x, brushAt.y);
+    // On the keyboard, player 1's pointer starts at the trowel.
+    inputManager.setKeyboardCursor(trowelAt);
+    this.splitTools = true;
+    this.trowel.setVisible(true);
+    this.brush.setVisible(true);
+    for (const tool of [this.trowel, this.brush]) popIn(this, tool, { duration: 350 });
+
+    // Player 1: a sand spot (a few sand blobs on top of each other).
+    const { sand: S, find: F } = PRACTICE;
+    const blobs = [
+      { key: 'gs-dust2', x: 0, y: 0, width: S.width, angle: 10 },
+      { key: 'gs-dust1', x: -70, y: -25, width: S.width * 0.6, angle: -30 },
+      { key: 'gs-dust3', x: 75, y: 20, width: S.width * 0.55, angle: 60 },
+    ].map((b) => {
+      const image = this.add.image(b.x, b.y, b.key).setAngle(b.angle);
+      return image.setScale(b.width / image.width);
+    });
+    const sand = this.add.container(S.x, S.y, blobs).setDepth(DEPTH.card);
+    popIn(this, sand, { delay: 200 });
+
+    // Player 2: a find with dust spots on it, like in the game (but smaller).
+    const item = this.add.image(0, 0, F.key);
+    item.setScale(fitScale(item, F.size, F.size));
+    const find = this.add.container(F.x, F.y, [item]).setDepth(DEPTH.card);
+    const dust: Practice['dust'] = [];
+    for (let i = 0; i < F.dust; i++) {
+      const angle = (i / F.dust) * Math.PI * 2 + PMath.FloatBetween(-0.3, 0.3);
+      const image = this.add
+        .image(Math.cos(angle) * F.size * 0.22, Math.sin(angle) * F.size * 0.18, `gs-dust${(i % 3) + 1}`)
+        .setAngle(PMath.Between(0, 359));
+      image.setScale(F.dustSize / image.width);
+      find.add(image);
+      dust.push({ image, dirt: F.effort });
+    }
+    popIn(this, find, { delay: 350 });
+
+    const waitText = this.add
+      .text(GAME_WIDTH / 2, PRACTICE.waitText.y, PRACTICE.waitText.text, {
+        fontFamily: SIGN_FONT,
+        fontStyle: '700',
+        fontSize: '36px',
+        color: '#FFFFFF',
+        resolution: RENDER_SCALE,
+      })
+      .setOrigin(0.5)
+      .setDepth(DEPTH.card)
+      .setShadow(0, 3, 'rgba(3, 49, 78, 0.5)', 6)
+      .setAlpha(0);
+    this.tweens.add({ targets: waitText, alpha: 1, duration: 400, delay: 500 });
+
+    this.practice = { sand, dug: 0, find, dust, waitText, checks: [], done: { p1: false, p2: false }, last: {} };
+  }
+
+  /** Is player 1 playing (a controller, or the keyboard)? Without: the mouse does both jobs, one after the other. */
+  private hasPlayer1() {
+    return inputManager.getMode() === 'tilt';
+  }
+
+  /**
+   * Tutorial and countdown, every frame: the trowel follows player 1, the brush the mouse.
+   * With only the mouse: the trowel until the sand is dug away, then the brush.
+   */
+  private updateSplitTools() {
+    if (!this.splitTools) return;
+    const both = this.hasPlayer1();
+    const practice = this.practice;
+    const digging = !!practice && !practice.done.p1;
+    const mouse = { x: this.lastPointer.x, y: this.lastPointer.y };
+
+    const trowelAt = both ? inputManager.getPlayerCursor(1) : mouse;
+    this.trowel.setPosition(trowelAt.x, trowelAt.y).setVisible(both || digging);
+    this.brush.setPosition(mouse.x, mouse.y).setVisible(both || !digging);
+
+    if (!practice || this.state !== 'tutorial') return;
+    practice.waitText.setText(both ? PRACTICE.waitText.text : PRACTICE.waitText.textOne);
+    if (this.trowel.visible) this.digPractice(practice, this.movedSince(practice, 'trowel', trowelAt));
+    else practice.last.trowel = undefined;
+    if (this.brush.visible) this.brushPractice(practice, this.movedSince(practice, 'brush', mouse));
+    else practice.last.brush = undefined;
+  }
+
+  /** How far a tool moved since last frame (capped, so jumping around doesn't count). */
+  private movedSince(practice: Practice, tool: 'trowel' | 'brush', at: { x: number; y: number }) {
+    const last = practice.last[tool];
+    practice.last[tool] = new PMath.Vector2(at.x, at.y);
+    return last ? Math.min(PMath.Distance.Between(last.x, last.y, at.x, at.y), 100) : 0;
+  }
+
+  /** Player 1: the trowel moves over the sand spot, which gets smaller and fades until it is gone. */
+  private digPractice(practice: Practice, moved: number) {
+    const { sand } = practice;
+    if (practice.done.p1 || moved === 0) return;
+    if (PMath.Distance.Between(this.trowel.x, this.trowel.y, sand.x, sand.y) > PRACTICE.sand.radius) return;
+    practice.dug += moved;
+    const left = Math.max(1 - practice.dug / PRACTICE.sand.effort, 0);
+    this.tweens.killTweensOf(sand);
+    sand.setAlpha(left).setScale(0.6 + 0.4 * left);
+    if (left > 0) return;
+
+    practice.done.p1 = true;
+    this.addCheck(sand.x, sand.y, PLAYER_COLOR.p1);
+    this.checkPracticeDone();
+  }
+
+  /** Player 2: the brush moves over the dust spots, which fade until the find is clean. */
+  private brushPractice(practice: Practice, moved: number) {
+    const { find } = practice;
+    if (practice.done.p2 || moved === 0) return;
+    for (const spot of practice.dust) {
+      const x = find.x + spot.image.x;
+      const y = find.y + spot.image.y;
+      if (PMath.Distance.Between(this.brush.x, this.brush.y, x, y) > PRACTICE.find.radius) continue;
+      spot.dirt -= moved;
+      spot.image.setAlpha(Math.max(spot.dirt / PRACTICE.find.effort, 0));
+      if (spot.dirt <= 0) spot.image.destroy();
+    }
+    practice.dust = practice.dust.filter((spot) => spot.dirt > 0);
+    if (practice.dust.length > 0) return;
+
+    practice.done.p2 = true;
+    // A small "clean!" pop, like in the game.
+    this.tweens.add({ targets: find, scale: 1.1, duration: 150, yoyo: true });
+    this.addCheck(find.x, find.y - PRACTICE.find.size / 2, PLAYER_COLOR.p2);
+    this.checkPracticeDone();
+  }
+
+  /** Both tried it: after a moment the intro goes and the countdown starts. */
+  private checkPracticeDone() {
+    const practice = this.practice;
+    if (!practice || !practice.done.p1 || !practice.done.p2) return;
+    this.time.delayedCall(PRACTICE.doneDelay, () => {
+      if (this.state === 'tutorial') this.startGame();
+    });
+  }
+
+  /** A check mark in a white circle, in the player's colour: this player did it. */
+  private addCheck(x: number, y: number, color: number) {
+    const mark = this.add
+      .graphics()
+      .fillStyle(0xffffff, 1)
+      .fillCircle(0, 0, 40)
+      .lineStyle(6, color, 1)
+      .strokeCircle(0, 0, 40)
+      .lineStyle(10, color, 1)
+      .beginPath()
+      .moveTo(-18, 2)
+      .lineTo(-5, 16)
+      .lineTo(20, -14)
+      .strokePath();
+    const check = this.add.container(x, y, [mark]).setDepth(DEPTH.card + 0.5);
+    popIn(this, check);
+    this.practice?.checks.push(check);
+  }
+
+  private removePractice() {
+    const practice = this.practice;
+    this.practice = undefined;
+    if (!practice) return;
+    for (const object of [practice.sand, practice.find, practice.waitText, ...practice.checks]) {
+      this.tweens.killTweensOf(object);
+      this.tweens.add({ targets: object, alpha: 0, scale: object.scale * 0.6, duration: 300, onComplete: () => object.destroy() });
+    }
+  }
+
+  /** "Hou je klaar!", then 3, 2, 1 (big, in the middle), then "Start!", and when that goes: `then`. */
+  private countdown(then: () => void) {
+    const steps = [COUNTDOWN.text, ...COUNTDOWN.numbers, COUNTDOWN.go];
+    let delay = 0;
+    steps.forEach((step, i) => {
+      const isNumber = i > 0 && i <= COUNTDOWN.numbers.length;
+      const time = isNumber ? COUNTDOWN.numberTime : COUNTDOWN.readyTime;
+      if (step === COUNTDOWN.go) this.time.delayedCall(delay + time - 250, then);
+      this.time.delayedCall(delay, () => {
+        const text = this.add
+          .text(GAME_WIDTH / 2, COUNTDOWN.y, step, {
+            fontFamily: FONT,
+            fontStyle: '700',
+            fontSize: isNumber ? '300px' : '150px',
+            color: '#FFFFFF',
+            resolution: RENDER_SCALE,
+          })
+          .setOrigin(0.5)
+          .setDepth(DEPTH.card)
+          .setShadow(0, 6, 'rgba(3, 49, 78, 0.45)', 12)
+          .setAngle([-4, 3, -2, 4, -3][i % 5]);
+        // Pops up, stays a moment, then grows a little and fades away.
+        this.tweens.add({ targets: text, scale: { from: 0.3, to: 1 }, duration: 350, ease: 'Back.Out' });
+        this.tweens.add({ targets: text, alpha: 0, scale: 1.3, delay: time - 250, duration: 250, onComplete: () => text.destroy() });
+      });
+      delay += time;
+    });
+  }
+
+  /** The intro goes (sign, cards, tutorial), then the countdown, then the game. */
   private startGame() {
     this.state = 'busy';
-    // The game itself: back to one pointer (the trowel and brush follow it).
-    inputManager.setSplit(null);
 
-    const [sign, cardP2, cardP1, brush, trowel] = this.introObjects;
-    const press = this.introPress;
-    this.introPress = undefined;
-    if (press) {
-      this.tweens.killTweensOf(press);
-      this.tweens.add({ targets: press, alpha: 0, duration: 250, onComplete: () => press.destroy() });
-    }
+    const [sign, cardP2, cardP1] = this.introObjects;
     sinkOut(this, cardP1);
     sinkOut(this, cardP2, { delay: 80 });
     sinkOut(this, sign, { delay: 160 });
-    slideOut(this, brush, 'left');
-    slideOut(this, trowel, 'right');
+    this.removePractice();
     this.time.delayedCall(800, () => this.introObjects.forEach((o) => o.destroy()));
 
-    this.time.delayedCall(500, () => this.buildPlayfield());
+    this.time.delayedCall(700, () =>
+      this.countdown(() => {
+        // The game itself: back to one pointer (the trowel and brush follow it, one at a time).
+        this.splitTools = false;
+        inputManager.setSplit(null);
+        this.setTool('trowel');
+        this.buildPlayfield();
+      }),
+    );
   }
 
   // ---------------------------------------------------------------------------
@@ -557,9 +819,7 @@ export class GeschiedenisScene extends Scene {
     this.buryNext();
 
     this.time.delayedCall(1100, () => {
-      // The hand turns into the trowel: the game has started.
-      this.pointers.hide();
-      this.input.setDefaultCursor('none');
+      // The trowel is already the cursor (since the tutorial): the game has started.
       this.setTool('trowel');
       this.state = 'dig';
       this.lastActivity = this.time.now;
@@ -568,6 +828,7 @@ export class GeschiedenisScene extends Scene {
 
   /** Every frame: bring the explanation back when the players seem stuck. */
   update() {
+    this.updateSplitTools();
     // Whose turn is it? Player 1 digs and picks up, player 2 brushes and places.
     const player =
       this.state === 'dig' || this.state === 'pickUp'

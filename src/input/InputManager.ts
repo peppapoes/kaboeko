@@ -285,6 +285,16 @@ class InputManager extends Events.EventEmitter {
     });
   }
 
+  /**
+   * Put player 1's cursor here for the keyboard (e.g. where the scene's player 1 tool
+   * starts), so the first key press doesn't make it jump. With a real controller it does nothing.
+   */
+  setKeyboardCursor(point: Point) {
+    if (this.isFresh(this.players.get(TILT_PLAYER))) return;
+    this.cursor = this.clamp(point);
+    if (this.keyboard) this.emit('cursormove', { player: TILT_PLAYER, ...this.cursor });
+  }
+
   /** Make the current position of every connected controller the center / neutral position (key C). */
   calibrate() {
     let count = 0;

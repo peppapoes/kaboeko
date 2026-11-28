@@ -4,7 +4,6 @@ import { inputManager } from '../input/InputManager';
 import { PlayerPointers } from '../playerPointers';
 import { dropIn, popIn, riseIn, sinkOut, slideIn } from '../puppet';
 import { loadSvgParts } from '../svgParts';
-import { addStartButton, preloadStartButton } from '../ui';
 import { COMEDY_CHARACTERS, type ComedyCharacter, type Movement } from './komedieCharacters';
 
 /*
@@ -13,8 +12,11 @@ import { COMEDY_CHARACTERS, type ComedyCharacter, type Movement } from './komedi
  *  0. Title: "KOMEDIE" with the letters falling in one by one, then a blue
  *     and a red balloon come in.
  *  1. Intro: the letters go, the balloons move next to the cards, the sign
- *     comes down and the cards and "druk op een knop" come up.
- *     A button press (click, controller button, or a throw/shake) starts the game.
+ *     comes down and the cards come up.
+ *     Mini tutorial: the aims take over from the hands and the balloons go to the
+ *     bottom edge. Each player throws a balloon at the target of their colour
+ *     (blue = player 1, red = player 2). When both hit it, the intro goes,
+ *     "Hou je klaar!", 3, 2, 1, "Start!", and the game starts.
  *  2. Play: a quote hangs at the top. The characters move around the circus tent.
  *     Both players throw water balloons at the one who says the quote (they
  *     play together). A hit knocks the character over; then the next quote comes.
@@ -113,8 +115,26 @@ const CARDS = {
 };
 /** The intro sign hangs from the top (its post goes up off the screen). */
 const SIGN = { x: GAME_WIDTH / 2, y: -8, scale: 0.88 };
-/** The brown "Druk op een knop om te starten" button. */
-const START_BUTTON = { x: GAME_WIDTH / 2, y: 1090, width: 750 };
+/**
+ * The mini tutorial: a target for each player (in the middle, between the cards).
+ * Throw a balloon at the target of your colour. width = size on screen.
+ * `waitText` is shown below them until both are hit.
+ */
+const PRACTICE = {
+  targets: { 1: { x: 740, y: 700 }, 2: { x: 1180, y: 700 } } as const,
+  width: 230,
+  /** `text` with two players, `textOne` with only the mouse (then only the red target counts). */
+  waitText: { text: 'Gooi allebei eens op jullie doel!', textOne: 'Gooi eens op het doel!', y: 990 },
+  /** After both are hit, this long (ms) before the intro goes and the countdown starts. */
+  doneDelay: 900,
+};
+/** The players' colours (for the check marks): player 1 blue, player 2 red. */
+const PLAYER_COLOR = { 1: 0x2b69b4, 2: 0xd23636 } as const;
+/**
+ * After the tutorial: "Hou je klaar!", then 3, 2, 1 in the middle of the screen,
+ * then "Start!" and the game starts. Times in ms.
+ */
+const COUNTDOWN = { text: 'Hou je klaar!', numbers: ['3', '2', '1'], go: 'Start!', y: 600, readyTime: 1300, numberTime: 850 };
 
 /**
  * Walkers (walk / walkFall) stand with their feet here and turn around at these x positions.
@@ -199,9 +219,18 @@ const DEPTH = {
 const FONT = 'Oswald';
 const SIGN_FONT = 'Andika';
 
-type State = 'title' | 'titleReady' | 'busy' | 'intro' | 'introReady' | 'play' | 'ending' | 'done';
+type State = 'title' | 'titleReady' | 'busy' | 'intro' | 'tutorial' | 'play' | 'ending' | 'done';
 type Player = 1 | 2;
 type Body = GameObjects.Image | GameObjects.Container;
+
+/** The mini tutorial: a target per player, and whether it was hit. */
+interface Practice {
+  targets: Record<Player, GameObjects.Image>;
+  done: Record<Player, boolean>;
+  waitText: GameObjects.Text;
+  /** The check marks (removed with the rest of the tutorial). */
+  checks: GameObjects.Container[];
+}
 
 /** walkFall: tripping over and getting up again. */
 type Trip = 'none' | 'falling' | 'lying' | 'rising';
@@ -265,6 +294,9 @@ export class KomedieScene extends Scene {
   private aims!: Record<Player, GameObjects.Image>;
   private lastThrow: Record<Player, number> = { 1: -Infinity, 2: -Infinity };
   private cannon?: GameObjects.Image;
+  private practice?: Practice;
+  /** The aims are the cursors (from the tutorial on). */
+  private aiming = false;
 
   constructor() {
     super('KomedieScene');
@@ -277,9 +309,10 @@ export class KomedieScene extends Scene {
     // Also as text: recoloured into the blue balloon of player 1 (see makeBlueBalloon).
     this.load.text('km-balloon-svg', PATH + 'ballon.svg');
     this.load.svg('km-sign', PATH + 'sign.svg', { scale: RENDER_SCALE });
+    this.load.svg('km-target-1', PATH + 'target-blue.svg', { scale: RENDER_SCALE });
+    this.load.svg('km-target-2', PATH + 'target-red.svg', { scale: RENDER_SCALE });
     // As text: opstapding.svg is cut off at the bottom, so it gets extra room first (see makePodium).
     this.load.text('km-podium-svg', PATH + 'opstapding.svg');
-    preloadStartButton(this);
     Object.values(CARDS).forEach((card) => this.load.svg(card.key, PATH + card.file, { scale: RENDER_SCALE }));
     // Loaded as text: split into one image per letter (see svgParts.ts).
     this.load.text('km-title', PATH + 'komedie.svg');
@@ -331,6 +364,8 @@ export class KomedieScene extends Scene {
     this.cannon = undefined;
     this.blueBalloon = undefined;
     this.waiting = { 1: undefined, 2: undefined };
+    this.practice = undefined;
+    this.aiming = false;
 
     this.add.image(0, 0, 'km-background').setOrigin(0).setDisplaySize(GAME_WIDTH, GAME_HEIGHT).setDepth(DEPTH.background);
 
@@ -363,19 +398,23 @@ export class KomedieScene extends Scene {
   /** "The button": a click, or player 1's controller button (which also arrives as a click). */
   private pressButton() {
     if (this.state === 'titleReady') this.showIntro();
-    else if (this.state === 'introReady') this.startGame();
   }
 
   // --- Input from the InputManager -------------------------------------------
 
   /** A click (player 2: the mouse, or player 2's controller button) or player 1's button: throw. */
   private onSelect(event: { player?: number }) {
-    if (this.state === 'play') this.throwBalloon(event.player === 1 ? 1 : 2);
+    if (this.canThrow()) this.throwBalloon(event.player === 1 ? 1 : 2);
+  }
+
+  /** Throwing works in the game, and already in the tutorial. */
+  private canThrow() {
+    return this.state === 'play' || this.state === 'tutorial';
   }
 
   /** The throw gesture (shake): throw, or go on from the title/intro. */
   private onShake(event: { player: number }) {
-    if (this.state === 'play') this.throwBalloon(event.player === 1 ? 1 : 2);
+    if (this.canThrow()) this.throwBalloon(event.player === 1 ? 1 : 2);
     else this.pressButton();
   }
 
@@ -406,6 +445,9 @@ export class KomedieScene extends Scene {
       loadSvgParts(this, this.cache.text.get('km-title'), 'km-title', RENDER_SCALE),
       this.makeBlueBalloon(),
       this.makePodium(),
+      // The fonts of the tutorial text and the countdown, so they are ready in time.
+      document.fonts.load(`700 38px ${SIGN_FONT}`),
+      document.fonts.load(`700 150px ${FONT}`),
     ]);
     // The player may have left the scene while the letters were being prepared.
     if (!this.sys.isActive() || this.state !== 'title') return;
@@ -480,10 +522,180 @@ export class KomedieScene extends Scene {
       this.introObjects.push(image);
     }
 
-    const button = addStartButton(this, START_BUTTON.x, START_BUTTON.y, { width: START_BUTTON.width, depth: DEPTH.content, delay: 900 });
-    this.introObjects.push(button);
+    // When the cards are up: the mini tutorial.
+    this.time.delayedCall(1400, () => {
+      if (this.state === 'busy') this.startTutorial();
+    });
+  }
 
-    this.time.delayedCall(1400, () => (this.state = 'introReady'));
+  // ---------------------------------------------------------------------------
+  // Mini tutorial
+  // ---------------------------------------------------------------------------
+
+  /**
+   * The aims take over from the hands, the balloons go to the bottom edge (where
+   * they are thrown from in the game) and each player throws once at the target
+   * of their colour.
+   */
+  private startTutorial() {
+    this.state = 'tutorial';
+    this.aiming = true;
+    this.pointers.hide();
+    this.input.setDefaultCursor('none');
+
+    // The intro balloons go down to the bottom edge: those are the ones the players throw.
+    const red = this.balloon;
+    const blue = this.blueBalloon;
+    this.balloon = undefined;
+    this.blueBalloon = undefined;
+    this.waiting = { 1: undefined, 2: undefined };
+    for (const [player, balloon] of [[1, blue], [2, red]] as const) {
+      if (!balloon) {
+        this.reload(player, 300);
+        continue;
+      }
+      this.tweens.killTweensOf(balloon);
+      this.tweens.add({
+        targets: balloon,
+        x: LAUNCH[player].x,
+        y: LAUNCH[player].y,
+        scale: LAUNCH_WIDTH / balloon.width,
+        angle: 0,
+        duration: 900,
+        ease: 'Back.InOut',
+        onComplete: () => (this.waiting[player] = balloon),
+      });
+      balloon.setDepth(DEPTH.balloon);
+    }
+
+    const makeTarget = (player: Player) => {
+      const { x, y } = PRACTICE.targets[player];
+      const target = this.add.image(x, y, `km-target-${player}`).setDepth(DEPTH.content);
+      target.setScale(PRACTICE.width / target.width);
+      popIn(this, target, { delay: player === 1 ? 100 : 250 });
+      return target;
+    };
+    const waitText = this.add
+      .text(GAME_WIDTH / 2, PRACTICE.waitText.y, PRACTICE.waitText.text, {
+        fontFamily: SIGN_FONT,
+        fontStyle: '700',
+        fontSize: '38px',
+        color: '#FFFFFF',
+        resolution: RENDER_SCALE,
+      })
+      .setOrigin(0.5)
+      .setDepth(DEPTH.content)
+      .setShadow(0, 3, 'rgba(3, 49, 78, 0.5)', 6)
+      .setAlpha(0);
+    this.tweens.add({ targets: waitText, alpha: 1, duration: 400, delay: 500 });
+
+    this.practice = { targets: { 1: makeTarget(1), 2: makeTarget(2) }, done: { 1: false, 2: false }, waitText, checks: [] };
+  }
+
+  /** A balloon landed in the tutorial: on the target of the player's own colour? */
+  private practiceHit(x: number, y: number, player: Player) {
+    const practice = this.practice;
+    if (!practice) return;
+    const onTarget = (p: Player) => {
+      const target = practice.targets[p];
+      return target.visible && Math.hypot(x - target.x, y - target.y) < target.displayWidth / 2 + CONFIG.HITBOX_PADDING / 2;
+    };
+
+    if (onTarget(player) && !practice.done[player]) {
+      practice.done[player] = true;
+      const target = practice.targets[player];
+      this.tweens.killTweensOf(target);
+      const scale = PRACTICE.width / target.width;
+      this.tweens.add({ targets: target, scale: { from: scale * 1.2, to: scale }, duration: 400, ease: 'Back.Out' });
+      this.addCheck(target.x, target.y - PRACTICE.width / 2, PLAYER_COLOR[player]);
+      this.checkPracticeDone();
+    } else {
+      // The other player's target (or already done): it just wobbles.
+      const other: Player = player === 1 ? 2 : 1;
+      const hit = onTarget(player) ? practice.targets[player] : onTarget(other) ? practice.targets[other] : undefined;
+      if (hit) this.tweens.add({ targets: hit, angle: { from: -8, to: 0 }, duration: 400, ease: 'Elastic.Out' });
+    }
+  }
+
+  /**
+   * Both hit their target: the intro goes and the countdown starts.
+   * (With only the mouse, player 1 can't throw: then only the red target counts.)
+   */
+  private checkPracticeDone() {
+    const practice = this.practice;
+    if (!practice || !practice.done[2] || (this.bothPlayersNeeded() && !practice.done[1])) return;
+    this.time.delayedCall(PRACTICE.doneDelay, () => {
+      if (this.state === 'tutorial') this.startGame();
+    });
+  }
+
+  /** The blue target only while a controller is in use (only then player 1 can throw). */
+  private updatePractice() {
+    const practice = this.practice;
+    if (!practice || this.state !== 'tutorial') return;
+    const show = this.bothPlayersNeeded() || practice.done[1];
+    practice.targets[1].setVisible(show);
+    practice.waitText.setText(show ? PRACTICE.waitText.text : PRACTICE.waitText.textOne);
+    // A controller was switched off: maybe the red target was enough now.
+    if (!show) this.checkPracticeDone();
+  }
+
+  private removePractice() {
+    const practice = this.practice;
+    this.practice = undefined;
+    if (!practice) return;
+    for (const object of [practice.targets[1], practice.targets[2], practice.waitText, ...practice.checks]) {
+      this.tweens.killTweensOf(object);
+      this.tweens.add({ targets: object, alpha: 0, scale: object.scale * 0.6, duration: 300, onComplete: () => object.destroy() });
+    }
+  }
+
+  /** A check mark in a white circle, in the player's colour: this player did it. */
+  private addCheck(x: number, y: number, color: number) {
+    const mark = this.add
+      .graphics()
+      .fillStyle(0xffffff, 1)
+      .fillCircle(0, 0, 40)
+      .lineStyle(6, color, 1)
+      .strokeCircle(0, 0, 40)
+      .lineStyle(10, color, 1)
+      .beginPath()
+      .moveTo(-18, 2)
+      .lineTo(-5, 16)
+      .lineTo(20, -14)
+      .strokePath();
+    const check = this.add.container(x, y, [mark]).setDepth(DEPTH.text);
+    popIn(this, check);
+    this.practice?.checks.push(check);
+  }
+
+  /** "Hou je klaar!", then 3, 2, 1 (big, in the middle), then "Start!", and when that goes: `then`. */
+  private countdown(then: () => void) {
+    const steps = [COUNTDOWN.text, ...COUNTDOWN.numbers, COUNTDOWN.go];
+    let delay = 0;
+    steps.forEach((step, i) => {
+      const isNumber = i > 0 && i <= COUNTDOWN.numbers.length;
+      const time = isNumber ? COUNTDOWN.numberTime : COUNTDOWN.readyTime;
+      if (step === COUNTDOWN.go) this.time.delayedCall(delay + time - 250, then);
+      this.time.delayedCall(delay, () => {
+        const text = this.add
+          .text(GAME_WIDTH / 2, COUNTDOWN.y, step, {
+            fontFamily: FONT,
+            fontStyle: '700',
+            fontSize: isNumber ? '300px' : '150px',
+            color: '#FFFFFF',
+            resolution: RENDER_SCALE,
+          })
+          .setOrigin(0.5)
+          .setDepth(DEPTH.text)
+          .setShadow(0, 6, 'rgba(3, 49, 78, 0.45)', 12)
+          .setAngle([-4, 3, -2, 4, -3][i % 5]);
+        // Pops up, stays a moment, then grows a little and fades away.
+        this.tweens.add({ targets: text, scale: { from: 0.3, to: 1 }, duration: 350, ease: 'Back.Out' });
+        this.tweens.add({ targets: text, alpha: 0, scale: 1.3, delay: time - 250, duration: 250, onComplete: () => text.destroy() });
+      });
+      delay += time;
+    });
   }
 
   /** Glide a tool to a new spot, then start its movement again. */
@@ -516,8 +728,10 @@ export class KomedieScene extends Scene {
   // Start of the game
   // ---------------------------------------------------------------------------
 
+  /** The intro goes (sign, cards, tutorial), the circus tent comes, then the countdown. */
   private startGame() {
     this.state = 'busy';
+    this.removePractice();
 
     // The intro goes: the sign back up, the cards and the button down.
     const intro = this.introObjects;
@@ -546,47 +760,26 @@ export class KomedieScene extends Scene {
     podium.setDisplaySize(PODIUM.width, (PODIUM.height * PODIUM_SVG.height) / PODIUM_SVG.contentHeight);
     riseIn(this, podium, { delay: 600, sway: false, distance: 500 });
 
-    // The intro balloons go down to the bottom edge: those are the ones the players throw.
-    const red = this.balloon;
-    const blue = this.blueBalloon;
-    this.balloon = undefined;
-    this.blueBalloon = undefined;
-    this.waiting = { 1: undefined, 2: undefined };
-    for (const [player, balloon] of [[1, blue], [2, red]] as const) {
-      if (!balloon) {
-        this.reload(player, 600);
-        continue;
-      }
-      this.tweens.killTweensOf(balloon);
-      this.tweens.add({
-        targets: balloon,
-        x: LAUNCH[player].x,
-        y: LAUNCH[player].y,
-        scale: LAUNCH_WIDTH / balloon.width,
-        angle: 0,
-        duration: 900,
-        ease: 'Back.InOut',
-        onComplete: () => (this.waiting[player] = balloon),
-      });
-      balloon.setDepth(DEPTH.balloon);
-    }
+    // Hou je klaar, 3, 2, 1, start: then the characters come.
+    this.time.delayedCall(900, () => this.countdown(() => this.startRound()));
+  }
 
+  /** After the countdown: the characters come out and the first quote comes. */
+  private startRound() {
+    if (this.state !== 'busy') return;
     // Pick the characters of this round; their quotes come in a random order.
     const defs = shuffle(COMEDY_CHARACTERS.filter((c) => c.enabled)).slice(0, CONFIG.CHARACTERS_PER_ROUND);
     this.actors = defs.map((def, i) => this.createActor(def, i));
     // (The cannon character comes out of the cannon by itself.)
     this.actors
       .filter((actor) => actor.movement !== 'cannon')
-      .forEach((actor, i) => popIn(this, actor.container, { delay: 700 + i * 150 }));
+      .forEach((actor, i) => popIn(this, actor.container, { delay: i * 150 }));
     this.round = shuffle(this.actors);
     this.current = 0;
 
-    this.time.delayedCall(1500, () => {
+    this.time.delayedCall(800, () => {
       if (this.state !== 'busy') return;
       this.state = 'play';
-      // Aims instead of the hands.
-      this.pointers.hide();
-      this.input.setDefaultCursor('none');
       this.nextQuote();
     });
   }
@@ -704,6 +897,7 @@ export class KomedieScene extends Scene {
     const dt = Math.min(delta, 50) / 1000;
     for (const actor of this.actors) this.moveActor(actor, dt);
     this.updateAims();
+    this.updatePractice();
 
     if (this.state === 'play' && this.phase === 'ask' && !this.hintActor && this.time.now - this.askedAt > CONFIG.HINT_DELAY) {
       this.startHint(this.round[this.current]);
@@ -1013,7 +1207,8 @@ export class KomedieScene extends Scene {
   }
 
   private updateAims() {
-    const playing = this.state === 'play';
+    // From the tutorial until the end of the game.
+    const playing = this.aiming && this.state !== 'ending' && this.state !== 'done';
     for (const player of [1, 2] as const) {
       // Player 1 only has an aim when a controller is in use.
       const show = playing && (player === 2 || inputManager.getMode() === 'tilt');
@@ -1095,6 +1290,7 @@ export class KomedieScene extends Scene {
   /** The balloon arrives: splash, and check what it hit. */
   private balloonLands(x: number, y: number, player: Player) {
     this.splash(x, y);
+    if (this.state === 'tutorial') this.practiceHit(x, y, player);
     if (this.state !== 'play') return;
 
     // The ball under a character bursts when it is hit (always, also between two quotes).
